@@ -217,7 +217,25 @@ export async function initPlaywright(headless = true, browserType: BrowserType =
       '--disable-infobars',
       '--no-first-run',
       '--no-default-browser-check',
+      // Flags de economia de RAM/CPU
+      '--disable-extensions',
+      '--disable-default-apps',
+      '--disable-sync',
+      '--mute-audio',
+      '--disable-background-networking',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--disable-dev-shm-usage',
+      '--js-flags=--max-old-space-size=256'
     ]
+  });
+
+  // Bloqueia recursos pesados/não essenciais para economizar RAM e banda em background
+  await context.route('**/*.{png,jpg,jpeg,gif,webp,svg,mp4,webm,ogg,mp3,woff,woff2,ttf,otf,css}', route => {
+    route.abort();
   });
 
   await context.addInitScript(getStealthScript());
@@ -634,7 +652,25 @@ export async function initPlaywrightForAccount(account: QwenAccount, headless = 
       '--disable-infobars',
       '--no-first-run',
       '--no-default-browser-check',
+      // Flags de economia de RAM/CPU
+      '--disable-extensions',
+      '--disable-default-apps',
+      '--disable-sync',
+      '--mute-audio',
+      '--disable-background-networking',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--disable-dev-shm-usage',
+      '--js-flags=--max-old-space-size=256'
     ]
+  });
+
+  // Bloqueia recursos pesados/não essenciais para economizar RAM e banda em background
+  await acctContext.route('**/*.{png,jpg,jpeg,gif,webp,svg,mp4,webm,ogg,mp3,woff,woff2,ttf,otf,css}', route => {
+    route.abort();
   });
 
   await acctContext.addInitScript(getStealthScript());

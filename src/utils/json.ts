@@ -181,6 +181,10 @@ export function robustParseJSON(str: string): any {
   let sanitized = str.trim();
   sanitized = sanitized.replace(/^```json\s*/, '').replace(/```$/, '').trim();
 
+  // Corrige chaves com aspas desbalanceadas nas transições de chaves (ex: chave": ou "chave:)
+  sanitized = sanitized.replace(/([{,]\s*)([a-zA-Z0-9_]+)":\s*/g, '$1"$2":');
+  sanitized = sanitized.replace(/([{,]\s*)"([a-zA-Z0-9_]+):\s*/g, '$1"$2":');
+
   const firstBrace = sanitized.indexOf('{');
   if (firstBrace === -1) return null;
 

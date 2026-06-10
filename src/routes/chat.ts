@@ -601,7 +601,7 @@ export async function chatCompletions(c: Context) {
                       foundStr = true;
                     }
                   }
-                } else if (delta.phase === 'answer') {
+                } else if (delta.phase === 'answer' || (delta.phase === undefined && delta.content !== undefined)) {
                   isThinkingChunk = false;
                   if (delta.content !== undefined) {
                     const newContent = delta.content || '';
