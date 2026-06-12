@@ -377,7 +377,7 @@ export async function initPlaywright(headless = true, browserType: BrowserType =
   });
 
   // Bloqueia recursos pesados/não essenciais para economizar RAM e banda em background
-  await context.route('**/*.{png,jpg,jpeg,gif,webp,svg,mp4,webm,ogg,mp3,woff,woff2,ttf,otf,css}', route => {
+  await context.route('**/*.{png,jpg,jpeg,gif,webp,svg,mp4,webm,ogg,mp3}', route => {
     route.abort();
   });
 
@@ -535,7 +535,7 @@ export async function getGuestHeaders(): Promise<Record<string, string>> {
   }
 
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('Timeout getting guest headers')), 30000);
+    const timeout = setTimeout(() => reject(new Error('Timeout getting guest headers')), config.timeouts.headers);
     
     const routeHandler = async (route: any, request: any) => {
       clearTimeout(timeout);
@@ -771,7 +771,7 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
 
   console.log(`[Playwright] Waiting for chat input for ${cacheKey}...`);
   const inputSelector = 'textarea:visible, [contenteditable="true"]:visible';
-  await page.waitForSelector(inputSelector, { timeout: 30000 }).catch(() => {
+  await page.waitForSelector(inputSelector, { timeout: config.timeouts.page }).catch(() => {
     console.error(`[Playwright] Chat input not found for ${cacheKey}. Current URL:`, page.url());
     throw new Error(`Timeout waiting for chat input for ${cacheKey}. Are you logged in?`);
   });
@@ -787,7 +787,7 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
         console.error('[Playwright] Failed to save error screenshot:', err.message);
       }
       reject(new Error(`Timeout waiting for Qwen headers for ${cacheKey}`));
-    }, 60000);
+    }, config.timeouts.headers);
 
     console.log(`[Playwright] Setting up route interception for ${cacheKey}...`);
     const routeHandler = async (route: any, request: any) => {
@@ -923,7 +923,7 @@ export async function initPlaywrightForAccount(account: QwenAccount, headless = 
   });
 
   // Bloqueia recursos pesados/não essenciais para economizar RAM e banda em background
-  await acctContext.route('**/*.{png,jpg,jpeg,gif,webp,svg,mp4,webm,ogg,mp3,woff,woff2,ttf,otf,css}', route => {
+  await acctContext.route('**/*.{png,jpg,jpeg,gif,webp,svg,mp4,webm,ogg,mp3}', route => {
     route.abort();
   });
 
@@ -942,13 +942,13 @@ export async function initPlaywrightForAccount(account: QwenAccount, headless = 
 
   // Navigate to Qwen home to validate session and populate cookies
   try {
-    await acctPage.goto('https://chat.qwen.ai/', { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await acctPage.goto('https://chat.qwen.ai/', { waitUntil: 'domcontentloaded', timeout: config.timeouts.navigation });
     const url = acctPage.url();
     if (url.includes('auth') || url.includes('login')) {
       if (account.email && account.password) {
         console.log(`[Playwright] Session expired for ${account.email}, re-logging in...`);
         await loginToQwenWithContext(acctContext, acctPage, account.email, account.password);
-        await acctPage.goto('https://chat.qwen.ai/', { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await acctPage.goto('https://chat.qwen.ai/', { waitUntil: 'domcontentloaded', timeout: config.timeouts.navigation });
       } else {
         console.warn(`[Playwright] Session expired for account ${account.id} but no credentials available for re-login.`);
       }
@@ -1100,7 +1100,7 @@ export async function browserFetch(
 
   return page.evaluate(async ({ url, options, reqId }: any) => {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs || 30000);
+    const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs || config.timeouts.http);
     try {
       const resp = await fetch(url, {
         method: options.method || 'POST',
@@ -1158,7 +1158,7 @@ export async function browserStreamFetch(
     streamCallbacks.delete(reqId);
     abortControllers.delete(reqId);
     metaResolve({ status: 0, statusText: 'Timeout', contentType: '', headers: {} });
-  }, options.timeoutMs || 130000);
+  }, options.timeoutMs || config.timeouts.chat);
 
   streamCallbacks.set(reqId, {
     onMeta: (meta) => {
@@ -1202,7 +1202,7 @@ export async function browserStreamFetch(
         const controller = new AbortController();
         (window as any).__abortControllers = (window as any).__abortControllers || {};
         (window as any).__abortControllers[reqId] = controller;
-        const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs || 130000);
+        const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs || config.timeouts.chat);
         try {
           const resp = await fetch(url, {
             method: options.method || 'POST',
