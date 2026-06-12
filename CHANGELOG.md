@@ -1,3 +1,49 @@
+# [1.6.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.5.1...v1.6.0) (2026-06-11)
+
+
+### Features
+
+* route API requests through browser fetch for real TLS fingerprint and harden stealth ([b32d66a](https://github.com/pedrofariasx/qwenproxy/commit/b32d66a4e2929cbf383179aa282899939833bd7f))
+
+## [1.5.1](https://github.com/pedrofariasx/qwenproxy/compare/v1.5.0...v1.5.1) (2026-06-10)
+
+
+### Bug Fixes
+
+* prevent guest mode timeout when bx-ua is missing in intercepted request ([b859ae7](https://github.com/pedrofariasx/qwenproxy/commit/b859ae779ed79116bc333ef507ed96fdb44e0f2a))
+
+# [1.5.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.4.0...v1.5.0) (2026-06-10)
+
+
+### Features
+
+* add QWEN_GUEST_MODE_ONLY environment variable to bypass account rotation ([ea928cd](https://github.com/pedrofariasx/qwenproxy/commit/ea928cd09ab3842b211f7c2b569a189542da8b04))
+
+# [1.4.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.3.3...v1.4.0) (2026-06-10)
+
+
+### Bug Fixes
+
+* auto-recover missing headers and validate sessions on account init ([54c9f11](https://github.com/pedrofariasx/qwenproxy/commit/54c9f112e0470297ba0c69a611f75a3fd2e05e62))
+* revert request gzip compression, allow optional model IDs in registry, and persist cooldowns ([e756781](https://github.com/pedrofariasx/qwenproxy/commit/e75678172d429e68043dd3db96ffafd9d5a47875))
+
+
+### Features
+
+* improve account cooldown logic and warm pool rate-limit handling ([f9d4b9d](https://github.com/pedrofariasx/qwenproxy/commit/f9d4b9d6e6a0576afd5f648fb21db93bc5137b73))
+
+
+### Performance Improvements
+
+* optimize for large contexts with gzip compression and accurate token estimation ([16b57e3](https://github.com/pedrofariasx/qwenproxy/commit/16b57e3f62c0d8a1ec0eaa39da9d38f6d7077c2a))
+
+## [1.3.3](https://github.com/pedrofariasx/qwenproxy/compare/v1.3.2...v1.3.3) (2026-06-10)
+
+
+### Performance Improvements
+
+* remove artificial random delay, increase warm pool, optimize TMD detection ([5610487](https://github.com/pedrofariasx/qwenproxy/commit/5610487a0a2df3c48add8d800fb4b8de4e77f582))
+
 ## [1.3.2](https://github.com/pedrofariasx/qwenproxy/compare/v1.3.1...v1.3.2) (2026-06-10)
 
 

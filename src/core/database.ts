@@ -42,6 +42,18 @@ function runMigrations(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);
   `)
+
+  // Add cooldown columns if they don't exist
+  try {
+    db.exec(`ALTER TABLE accounts ADD COLUMN cooldown_until INTEGER DEFAULT 0;`)
+  } catch (err) {
+    // Column already exists or error
+  }
+  try {
+    db.exec(`ALTER TABLE accounts ADD COLUMN cooldown_reason TEXT;`)
+  } catch (err) {
+    // Column already exists or error
+  }
 }
 
 /**

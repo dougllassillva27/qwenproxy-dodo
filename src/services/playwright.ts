@@ -61,19 +61,22 @@ function getAccountHeaderCache(accountId: string): AccountHeaderCache {
   return cache;
 }
 
-const HEADERS_TTL = 60 * 60 * 1000;
+const HEADERS_TTL = 5 * 60 * 1000;
 const COOKIE_CACHE_TTL = 5 * 60 * 1000;
 const cookieCaches = new Map<string, { cookie: string, timestamp: number }>();
 const REFRESH_THRESHOLD = 0.7;
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+export const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36';
+export const CHROME_CLIENT_HINTS = '"Chromium";v="137", "Google Chrome";v="137", "Not/A)Brand";v="99"';
+
 function getStealthScript(): string {
   return `
+    try {
+      delete navigator.__proto__.webdriver;
+    } catch(e) {}
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    Object.defineProperty(navigator, 'plugins', {
-      get: () => [1, 2, 3, 4, 5],
-    });
     Object.defineProperty(navigator, 'languages', {
       get: () => ['pt-BR', 'pt', 'en-US', 'en'],
     });
@@ -82,32 +85,153 @@ function getStealthScript(): string {
     Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
     Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
     Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
+
     window.chrome = {
-      runtime: {},
-      loadTimes: function() {},
-      csi: function() {},
-      app: {},
+      runtime: { onConnect: {}, onMessage: {} },
+      loadTimes: function() { return {}; },
+      csi: function() { return {}; },
+      app: { isInstalled: false, InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' }, RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' } },
     };
+
     const originalQuery = window.navigator.permissions.query;
     window.navigator.permissions.query = (parameters) =>
       parameters.name === 'notifications'
-        ? Promise.resolve({ state: Notification.permission })
+        ? Promise.resolve({ state: (typeof Notification !== 'undefined' ? Notification.permission : 'default'), onchange: null })
         : originalQuery(parameters);
+
     const getParameter = WebGLRenderingContext.prototype.getParameter;
     WebGLRenderingContext.prototype.getParameter = function(parameter) {
       if (parameter === 37445) return 'Intel Inc.';
       if (parameter === 37446) return 'Intel Iris OpenGL Engine';
       return getParameter.apply(this, arguments);
     };
+    if (typeof WebGL2RenderingContext !== 'undefined') {
+      const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+      WebGL2RenderingContext.prototype.getParameter = function(parameter) {
+        if (parameter === 37445) return 'Intel Inc.';
+        if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+        return getParameter2.apply(this, arguments);
+      };
+    }
+
     Object.defineProperty(navigator, 'connection', {
       get: () => ({
         effectiveType: '4g',
         rtt: 50,
         downlink: 10,
         saveData: false,
+        addEventListener: () => {},
+        removeEventListener: () => {},
       }),
     });
-    delete navigator.__proto__.webdriver;
+
+    (function() {
+      function makeMime(desc, suffixes, type) {
+        const m = { description: desc, suffixes: suffixes, type: type };
+        return m;
+      }
+      const pdfMime = makeMime('Portable Document Format', 'pdf', 'application/pdf');
+      const pdfxMime = makeMime('Portable Document Format', 'pdf', 'text/pdf');
+      const pdfPlugin = {
+        name: 'PDF Viewer',
+        description: 'Portable Document Format',
+        filename: 'internal-pdf-viewer',
+        length: 2,
+        0: pdfMime,
+        1: pdfxMime,
+      };
+      pdfMime.enabledPlugin = pdfPlugin;
+      pdfxMime.enabledPlugin = pdfPlugin;
+
+      const chromePdfMime = makeMime('Portable Document Format', 'pdf', 'application/pdf');
+      const chromePdfMime2 = makeMime('Portable Document Format', 'pdf', 'text/pdf');
+      const chromePdfPlugin = {
+        name: 'Chrome PDF Viewer',
+        description: 'Portable Document Format',
+        filename: 'internal-pdf-viewer',
+        length: 2,
+        0: chromePdfMime,
+        1: chromePdfMime2,
+      };
+      chromePdfMime.enabledPlugin = chromePdfPlugin;
+      chromePdfMime2.enabledPlugin = chromePdfPlugin;
+
+      const nativePlugin = {
+        name: 'Native Client',
+        description: '',
+        filename: 'internal-nacl-plugin',
+        length: 2,
+        0: makeMime('Native Client Executable', '', 'application/x-nacl'),
+        1: makeMime('Portable Native Client Executable', '', 'application/x-pnacl'),
+      };
+      nativePlugin[0].enabledPlugin = nativePlugin;
+      nativePlugin[1].enabledPlugin = nativePlugin;
+
+      const pluginsList = [pdfPlugin, chromePdfPlugin, nativePlugin];
+      const mimeList = [pdfMime, pdfxMime, chromePdfMime, chromePdfMime2, nativePlugin[0], nativePlugin[1]];
+
+      function makeNamedNodeMap(items, namedEntries) {
+        const arr = [...items];
+        for (const [k, v] of namedEntries) arr[k] = v;
+        arr.item = function(i) { return this[i] || null; };
+        arr.namedItem = function(name) { return this[name] || null; };
+        arr.refresh = function() {};
+        return arr;
+      }
+
+      const pluginEntries = pluginsList.map((p, i) => [p.name, p]);
+      const mimeEntries = mimeList.map((m) => [m.type, m]);
+
+      const pluginsArr = makeNamedNodeMap(pluginsList, pluginEntries);
+      const mimeArr = makeNamedNodeMap(mimeList, mimeEntries);
+
+      Object.defineProperty(navigator, 'plugins', { get: () => pluginsArr });
+      Object.defineProperty(navigator, 'mimeTypes', { get: () => mimeArr });
+    })();
+
+    (function() {
+      const _toDataURL = HTMLCanvasElement.prototype.toDataURL;
+      const _toBlob = HTMLCanvasElement.prototype.toBlob;
+      const _getImageData = CanvasRenderingContext2D.prototype.getImageData;
+
+      function addNoise(canvas) {
+        try {
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return;
+          const style = ctx.fillStyle;
+          ctx.fillStyle = 'rgba(255,255,255,0.01)';
+          ctx.fillRect(0, 0, 1, 1);
+          ctx.fillStyle = style;
+        } catch(e) {}
+      }
+
+      HTMLCanvasElement.prototype.toDataURL = function(...args) {
+        addNoise(this);
+        return _toDataURL.apply(this, args);
+      };
+      HTMLCanvasElement.prototype.toBlob = function(...args) {
+        addNoise(this);
+        return _toBlob.apply(this, args);
+      };
+    })();
+
+    (function() {
+      if (typeof OfflineAudioContext === 'undefined') return;
+      const _startRendering = OfflineAudioContext.prototype.startRendering;
+      OfflineAudioContext.prototype.startRendering = function() {
+        return _startRendering.apply(this, arguments).then(buffer => {
+          try {
+            for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+              const data = buffer.getChannelData(ch);
+              for (let i = 0; i < Math.min(data.length, 100); i++) {
+                data[i] += (Math.random() - 0.5) * 1e-7;
+              }
+            }
+          } catch(e) {}
+          return buffer;
+        });
+      };
+    })();
   `;
 }
 
@@ -188,9 +312,28 @@ export async function getBasicHeaders(accountId?: string): Promise<{ cookie: str
   }
   
   const cache = getAccountHeaderCache(cacheKey);
+  let bxUa = cache.currentHeaders['bx-ua'];
+  let bxUmidtoken = cache.currentHeaders['bx-umidtoken'];
   const bxV = cache.currentHeaders['bx-v'] || '2.5.36';
-  const bxUa = cache.currentHeaders['bx-ua'];
-  const bxUmidtoken = cache.currentHeaders['bx-umidtoken'];
+  
+  // Auto-recover missing anti-fraud headers by triggering full header interception
+  if (!bxUa || !bxUmidtoken) {
+    console.log(`[Playwright] Missing bx-ua/bx-umidtoken for ${cacheKey}, triggering header interception...`);
+    try {
+      const result = await getQwenHeaders(true, accountId);
+      bxUa = result.headers['bx-ua'];
+      bxUmidtoken = result.headers['bx-umidtoken'];
+      return {
+        cookie: await getCookies(accountId),
+        userAgent,
+        bxV: result.headers['bx-v'] || bxV,
+        bxUa,
+        bxUmidtoken,
+      };
+    } catch (err: any) {
+      console.warn(`[Playwright] Failed to auto-recover headers for ${cacheKey}: ${err.message}`);
+    }
+  }
   
   return { cookie, userAgent, bxV, bxUa, bxUmidtoken };
 }
@@ -209,7 +352,7 @@ export async function initPlaywright(headless = true, browserType: BrowserType =
   context = await engine.launchPersistentContext(profilePath, {
     headless,
     channel,
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    userAgent: CHROME_UA,
     ignoreDefaultArgs: ['--enable-automation'],
     args: [
       '--disable-blink-features=AutomationControlled',
@@ -354,7 +497,118 @@ async function loginToQwenUI(email: string, password: string): Promise<boolean> 
   return false;
 }
 
+let guestContext: BrowserContext | null = null;
+let guestPage: Page | null = null;
+let guestHeadersCache: { headers: Record<string, string>, timestamp: number } | null = null;
+const GUEST_HEADERS_TTL = 30 * 60 * 1000;
+
+export async function getGuestHeaders(): Promise<Record<string, string>> {
+  if (guestHeadersCache && (Date.now() - guestHeadersCache.timestamp) < GUEST_HEADERS_TTL) {
+    return guestHeadersCache.headers;
+  }
+
+  if (!guestPage) {
+    const profilePath = path.resolve('qwen_profiles', '_guest');
+    const { engine, channel } = resolveBrowserEngine('chromium');
+    guestContext = await engine.launchPersistentContext(profilePath, {
+      headless: config.browser.headless,
+      channel,
+      userAgent: CHROME_UA,
+      ignoreDefaultArgs: ['--enable-automation'],
+      args: ['--disable-blink-features=AutomationControlled', '--disable-features=IsolateOrigins,site-per-process', '--disable-infobars', '--no-first-run', '--no-default-browser-check']
+    });
+    await guestContext.addInitScript(getStealthScript());
+    guestPage = await guestContext.newPage();
+    
+    await guestPage.goto('https://chat.qwen.ai/c/guest', { waitUntil: 'domcontentloaded' });
+    
+    try {
+      const keepSessionBtn = await guestPage.$('button:has-text("Manter sessão terminada"), button:has-text("Keep session ended"), button:has-text("Manter sessão encerrada")');
+      if (keepSessionBtn) {
+        await keepSessionBtn.click();
+        console.log('[Playwright] Guest: Clicked "Manter sessão terminada"');
+        await sleep(1000);
+      }
+    } catch (e) {
+      // Modal might not be there
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Timeout getting guest headers')), 30000);
+    
+    const routeHandler = async (route: any, request: any) => {
+      clearTimeout(timeout);
+      const reqHeaders = request.headers();
+      console.log('[Playwright] Guest intercepted request:', request.url());
+      
+      const extractedHeaders = {
+        'cookie': reqHeaders['cookie'] || '',
+        'bx-ua': reqHeaders['bx-ua'] || '',
+        'bx-umidtoken': reqHeaders['bx-umidtoken'] || '',
+        'bx-v': reqHeaders['bx-v'] || '2.5.36',
+        'user-agent': reqHeaders['user-agent'] || CHROME_UA,
+      };
+      
+      if (extractedHeaders['bx-ua']) {
+        console.log('[Playwright] Guest: Successfully captured bx-ua');
+        guestHeadersCache = { headers: extractedHeaders, timestamp: Date.now() };
+        await route.abort('aborted');
+        await guestPage!.unroute('**/api/v2/chat/completions*', routeHandler);
+        
+        import('./qwen.js').then(m => m.disableNativeTools('guest').catch(() => {}));
+        
+        resolve(extractedHeaders);
+      } else {
+        console.log('[Playwright] Guest: Request missing bx-ua, continuing route. Headers:', Object.keys(reqHeaders));
+        await route.continue();
+        // If it's the completions request and we still don't have bx-ua, we might need to resolve anyway 
+        // or the UI interaction failed to trigger the SDK.
+        if (request.url().includes('/api/v2/chat/completions')) {
+           console.warn('[Playwright] Guest: Completions request made without bx-ua. Resolving with available headers.');
+           guestHeadersCache = { headers: extractedHeaders, timestamp: Date.now() };
+           await guestPage!.unroute('**/api/v2/chat/completions*', routeHandler);
+           resolve(extractedHeaders);
+        }
+      }
+    };
+
+    guestPage!.route('**/api/v2/chat/completions*', routeHandler).then(async () => {
+      const inputSelector = 'textarea:visible, [contenteditable="true"]:visible';
+      try {
+        await guestPage!.waitForSelector(inputSelector, { timeout: 10000 });
+        await guestPage!.focus(inputSelector);
+        await guestPage!.fill(inputSelector, '');
+        await guestPage!.type(inputSelector, 'a', { delay: 50 });
+        await sleep(1000);
+        
+        const selectors = ['.message-input-right-button-send .send-button', '.chat-prompt-send-button', 'button.send-button'];
+        let clicked = false;
+        for (const selector of selectors) {
+          const btn = await guestPage!.$(selector);
+          if (btn && await btn.isVisible()) {
+            await btn.click({ force: true, delay: 50 }).catch(() => {});
+            clicked = true;
+            break;
+          }
+        }
+        if (!clicked) {
+          await guestPage!.keyboard.press('Enter');
+        }
+      } catch (e) {
+        clearTimeout(timeout);
+        reject(e);
+      }
+    });
+  });
+}
+
 export async function getQwenHeaders(forceNew = false, accountId?: string): Promise<{ headers: Record<string, string>, chatSessionId: string, parentMessageId: string | null }> {
+  if (accountId === 'guest') {
+    const headers = await getGuestHeaders();
+    return { headers, chatSessionId: 'guest-session', parentMessageId: null };
+  }
+
   const cacheKey = accountId || 'global';
   const cache = getAccountHeaderCache(cacheKey);
 
@@ -475,7 +729,7 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
   const isOnQwen = currentUrl.includes('chat.qwen.ai');
   const isOnSpecificChat = isOnQwen && /\/c\//.test(currentUrl);
 
-  if (!isOnQwen || forceNew || isOnSpecificChat) {
+  if (!isOnQwen || forceNew) {
     console.log(`[Playwright] Navigating to Qwen home for ${cacheKey}... (Current: ${currentUrl})`);
     await page.goto('https://chat.qwen.ai/', { waitUntil: 'domcontentloaded' });
   }
@@ -644,7 +898,7 @@ export async function initPlaywrightForAccount(account: QwenAccount, headless = 
   const acctContext = await engine.launchPersistentContext(profilePath, {
     headless,
     channel,
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    userAgent: CHROME_UA,
     ignoreDefaultArgs: ['--enable-automation'],
     args: [
       '--disable-blink-features=AutomationControlled',
@@ -685,6 +939,25 @@ export async function initPlaywrightForAccount(account: QwenAccount, headless = 
   if (!hasAuthCookie && account.email && account.password) {
     await loginToQwenWithContext(acctContext, acctPage, account.email, account.password);
   }
+
+  // Navigate to Qwen home to validate session and populate cookies
+  try {
+    await acctPage.goto('https://chat.qwen.ai/', { waitUntil: 'domcontentloaded', timeout: 15000 });
+    const url = acctPage.url();
+    if (url.includes('auth') || url.includes('login')) {
+      if (account.email && account.password) {
+        console.log(`[Playwright] Session expired for ${account.email}, re-logging in...`);
+        await loginToQwenWithContext(acctContext, acctPage, account.email, account.password);
+        await acctPage.goto('https://chat.qwen.ai/', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      } else {
+        console.warn(`[Playwright] Session expired for account ${account.id} but no credentials available for re-login.`);
+      }
+    } else {
+      console.log(`[Playwright] Session validated for ${account.email}.`);
+    }
+  } catch (err: any) {
+    console.warn(`[Playwright] Failed to validate session for ${account.email}: ${err.message}`);
+  }
 }
 
 export async function launchManualLoginAccount(accountId: string, browserType: BrowserType = 'chromium'): Promise<{ context: BrowserContext, page: Page }> {
@@ -694,7 +967,7 @@ export async function launchManualLoginAccount(accountId: string, browserType: B
   const acctContext = await engine.launchPersistentContext(profilePath, {
     headless: false,
     channel,
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    userAgent: CHROME_UA,
     ignoreDefaultArgs: ['--enable-automation'],
     args: [
       '--disable-blink-features=AutomationControlled',
@@ -776,4 +1049,235 @@ async function loginToQwenWithContext(acctContext: BrowserContext, acctPage: Pag
 
   console.error(`[Playwright] Login failed for ${email}:`, result.data || result.error);
   return false;
+}
+
+export function getPageForAccount(accountId?: string): Page | null {
+  if (accountId === 'guest') return guestPage;
+  if (accountId) return accountPages.get(accountId) || null;
+  return activePage;
+}
+
+const streamCallbacks = new Map<string, {
+  onChunk: (chunk: string) => void;
+  onEnd: () => void;
+  onError: (msg: string) => void;
+  onMeta: (meta: { status: number; statusText: string; contentType: string; headers: Record<string, string> }) => void;
+  onBody: (body: string) => void;
+}>();
+
+const abortControllers = new Map<string, () => void>();
+
+const pagesWithExposed = new WeakSet<Page>();
+
+async function ensureStreamBridge(page: Page): Promise<void> {
+  if (pagesWithExposed.has(page)) return;
+  pagesWithExposed.add(page);
+  await page.exposeFunction('__streamRelay', (reqId: string, type: string, data: any) => {
+    const cb = streamCallbacks.get(reqId);
+    if (!cb) return;
+    switch (type) {
+      case 'meta': cb.onMeta(data); break;
+      case 'chunk': cb.onChunk(data); break;
+      case 'end': cb.onEnd(); streamCallbacks.delete(reqId); abortControllers.delete(reqId); break;
+      case 'error': cb.onError(data); streamCallbacks.delete(reqId); abortControllers.delete(reqId); break;
+      case 'body': cb.onBody(data); streamCallbacks.delete(reqId); abortControllers.delete(reqId); break;
+    }
+  });
+}
+
+export async function browserFetch(
+  page: Page,
+  url: string,
+  options: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    timeoutMs?: number;
+  } = {},
+): Promise<{ status: number; statusText: string; contentType: string; body: string; headers: Record<string, string> }> {
+  await ensureStreamBridge(page);
+  const reqId = crypto.randomUUID();
+
+  return page.evaluate(async ({ url, options, reqId }: any) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs || 30000);
+    try {
+      const resp = await fetch(url, {
+        method: options.method || 'POST',
+        headers: options.headers || {},
+        body: options.body || undefined,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      const respHeaders: Record<string, string> = {};
+      resp.headers.forEach((v: string, k: string) => { respHeaders[k] = v; });
+      const body = await resp.text();
+      return {
+        status: resp.status,
+        statusText: resp.statusText,
+        contentType: resp.headers.get('content-type') || '',
+        body,
+        headers: respHeaders,
+      };
+    } catch (e: any) {
+      clearTimeout(timeoutId);
+      throw new Error(`browserFetch failed: ${e.message}`);
+    }
+  }, { url, options, reqId });
+}
+
+export async function browserStreamFetch(
+  page: Page,
+  url: string,
+  options: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    timeoutMs?: number;
+  } = {},
+): Promise<{
+  status: number;
+  statusText: string;
+  contentType: string;
+  headers: Record<string, string>;
+  stream: ReadableStream<Uint8Array>;
+  body: string;
+  reqId: string;
+  abort: () => void;
+}> {
+  await ensureStreamBridge(page);
+  const reqId = crypto.randomUUID();
+  const enc = new TextEncoder();
+
+  let metaResolve!: (value: { status: number; statusText: string; contentType: string; headers: Record<string, string> }) => void;
+  const metaPromise = new Promise<{ status: number; statusText: string; contentType: string; headers: Record<string, string> }>((resolve) => {
+    metaResolve = resolve;
+  });
+
+  const metaTimeout = setTimeout(() => {
+    streamCallbacks.delete(reqId);
+    abortControllers.delete(reqId);
+    metaResolve({ status: 0, statusText: 'Timeout', contentType: '', headers: {} });
+  }, options.timeoutMs || 130000);
+
+  streamCallbacks.set(reqId, {
+    onMeta: (meta) => {
+      clearTimeout(metaTimeout);
+      metaResolve(meta);
+    },
+    onChunk: () => {},
+    onEnd: () => {},
+    onError: () => {},
+    onBody: () => {},
+  });
+
+  let abortFn = () => {};
+  let bodyResolve!: (value: string) => void;
+  const bodyPromise = new Promise<string>((resolve) => { bodyResolve = resolve; });
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const cb = streamCallbacks.get(reqId);
+      if (!cb) return;
+      cb.onChunk = (chunk: string) => {
+        try { controller.enqueue(enc.encode(chunk)); } catch {}
+      };
+      cb.onEnd = () => {
+        try { controller.close(); } catch {}
+        streamCallbacks.delete(reqId);
+        abortControllers.delete(reqId);
+      };
+      cb.onError = (msg: string) => {
+        try { controller.error(new Error(msg)); } catch {}
+        streamCallbacks.delete(reqId);
+        abortControllers.delete(reqId);
+      };
+      cb.onBody = (text: string) => {
+        bodyResolve(text);
+        streamCallbacks.delete(reqId);
+        abortControllers.delete(reqId);
+      };
+
+      page.evaluate(async ({ url, options, reqId }: any) => {
+        const controller = new AbortController();
+        (window as any).__abortControllers = (window as any).__abortControllers || {};
+        (window as any).__abortControllers[reqId] = controller;
+        const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs || 130000);
+        try {
+          const resp = await fetch(url, {
+            method: options.method || 'POST',
+            headers: options.headers || {},
+            body: options.body || undefined,
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          const respHeaders: Record<string, string> = {};
+          resp.headers.forEach((v: string, k: string) => { respHeaders[k] = v; });
+          (window as any).__streamRelay(reqId, 'meta', {
+            status: resp.status,
+            statusText: resp.statusText,
+            contentType: resp.headers.get('content-type') || '',
+            headers: respHeaders,
+          });
+
+          if (!resp.ok || !resp.body) {
+            const bodyText = await resp.text();
+            (window as any).__streamRelay(reqId, 'body', bodyText);
+            delete (window as any).__abortControllers[reqId];
+            return;
+          }
+
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              (window as any).__streamRelay(reqId, 'end', null);
+              break;
+            }
+            (window as any).__streamRelay(reqId, 'chunk', decoder.decode(value, { stream: true }));
+          }
+          delete (window as any).__abortControllers[reqId];
+        } catch (e: any) {
+          clearTimeout(timeoutId);
+          (window as any).__streamRelay(reqId, 'error', e.message);
+          delete (window as any).__abortControllers[reqId];
+        }
+      }, { url, options, reqId }).catch((e: any) => {
+        const cb = streamCallbacks.get(reqId);
+        if (cb) {
+          cb.onError(e.message);
+        }
+      });
+    },
+    cancel() {
+      page.evaluate((reqId: string) => {
+        const c = (window as any).__abortControllers?.[reqId];
+        if (c) { c.abort(); delete (window as any).__abortControllers[reqId]; }
+      }, reqId).catch(() => {});
+      streamCallbacks.delete(reqId);
+      abortControllers.delete(reqId);
+    },
+  });
+
+  const meta = await metaPromise;
+
+  abortFn = () => {
+    page.evaluate((reqId: string) => {
+      const c = (window as any).__abortControllers?.[reqId];
+      if (c) { c.abort(); delete (window as any).__abortControllers[reqId]; }
+    }, reqId).catch(() => {});
+    streamCallbacks.delete(reqId);
+    abortControllers.delete(reqId);
+  };
+
+  abortControllers.set(reqId, abortFn);
+
+  return {
+    ...meta,
+    stream,
+    body: meta.contentType.includes('text/event-stream') ? '' : await bodyPromise,
+    reqId,
+    abort: abortFn,
+  };
 }

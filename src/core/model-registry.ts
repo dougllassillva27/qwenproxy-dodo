@@ -25,45 +25,47 @@ const modelContextWindows: Record<string, number> = {
 }
 
 const modelTokenDivisors: Record<string, number> = {
-  'qwen3.7-max': 2.2,
-  'qwen3.6-max-preview': 2.2,
-  'qwen3.5-max-2026-03-08': 2.2,
-  'qwen3-max-2026-01-23': 2.2,
-  'qwen-latest-series-invite-beta-v24': 2.2,
-  'qwen3.7-plus': 2.0,
-  'qwen3.6-plus': 2.0,
-  'qwen3.6-plus-preview': 2.0,
-  'qwen3.5-plus': 2.0,
-  'qwen-plus-2025-07-28': 2.0,
-  'qwen-latest-series-invite-beta-v16': 2.0,
-  'qwen3.5-flash': 1.8,
-  'qwen3.5-omni-plus': 1.8,
-  'qwen3.5-omni-flash': 1.7,
-  'qwen3-omni-flash-2025-12-01': 1.7,
-  'qwen3.5-397b-a17b': 1.9,
-  'qwen3.5-122b-a10b': 1.9,
-  'qwen3.6-35b-a3b': 1.9,
-  'qwen3.5-35b-a3b': 1.9,
-  'qwen3.6-27b': 1.9,
-  'qwen3.5-27b': 1.9,
-  'qwen3-coder-plus': 2.3,
-  'qwen3-vl-plus': 2.1,
+  'qwen3.7-max': 3.5,
+  'qwen3.6-max-preview': 3.5,
+  'qwen3.5-max-2026-03-08': 3.5,
+  'qwen3-max-2026-01-23': 3.5,
+  'qwen-latest-series-invite-beta-v24': 3.5,
+  'qwen3.7-plus': 3.5,
+  'qwen3.6-plus': 3.5,
+  'qwen3.6-plus-preview': 3.5,
+  'qwen3.5-plus': 3.5,
+  'qwen-plus-2025-07-28': 3.5,
+  'qwen-latest-series-invite-beta-v16': 3.5,
+  'qwen3.5-flash': 3.2,
+  'qwen3.5-omni-plus': 3.0,
+  'qwen3.5-omni-flash': 3.0,
+  'qwen3-omni-flash-2025-12-01': 3.0,
+  'qwen3.5-397b-a17b': 3.2,
+  'qwen3.5-122b-a10b': 3.2,
+  'qwen3.6-35b-a3b': 3.2,
+  'qwen3.5-35b-a3b': 3.2,
+  'qwen3.6-27b': 3.2,
+  'qwen3.5-27b': 3.2,
+  'qwen3-coder-plus': 3.8,
+  'qwen3-vl-plus': 3.5,
 }
 
 const defaultContextWindow = 131072
-const defaultTokenDivisor = 2.0
-export const MAX_PAYLOAD_SIZE = 10 * 1024 * 1024
+const defaultTokenDivisor = 3.5
+export const MAX_PAYLOAD_SIZE = 50 * 1024 * 1024
 
 export function setModelContextWindow(modelId: string, contextWindow: number): void {
   modelContextWindows[modelId] = contextWindow
 }
 
-export function getModelContextWindow(modelId: string): number {
+export function getModelContextWindow(modelId?: string): number {
+  if (!modelId) return defaultContextWindow
   const baseId = modelId.replace('-no-thinking', '')
   return modelContextWindows[baseId] ?? defaultContextWindow
 }
 
-export function getModelTokenDivisor(modelId: string): number {
+export function getModelTokenDivisor(modelId?: string): number {
+  if (!modelId) return defaultTokenDivisor
   const baseId = modelId.replace('-no-thinking', '')
   return modelTokenDivisors[baseId] ?? defaultTokenDivisor
 }

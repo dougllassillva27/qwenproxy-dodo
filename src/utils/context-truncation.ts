@@ -1,7 +1,7 @@
 import { getModelTokenDivisor } from '../core/model-registry.js'
 
 export function estimateTokenCount(text: string, modelId?: string): number {
-  const divisor = modelId ? getModelTokenDivisor(modelId) : 2.0
+  const divisor = getModelTokenDivisor(modelId)
   return Math.ceil(text.length / divisor)
 }
 
@@ -36,7 +36,7 @@ export function truncateMessages(
   systemPrompt: string = '',
   modelId?: string
 ): Array<{ role: string; content: string }> {
-  const divisor = modelId ? getModelTokenDivisor(modelId) : 2.0
+  const divisor = getModelTokenDivisor(modelId)
   const systemTokens = estimateTokenCount(systemPrompt, modelId);
   const availableTokens = maxContextLength - systemTokens - 500;
   

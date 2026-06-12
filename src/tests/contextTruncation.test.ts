@@ -6,20 +6,20 @@ test('estimateTokenCount: returns 0 for empty string', () => {
   assert.strictEqual(estimateTokenCount(''), 0);
 });
 
-test('estimateTokenCount: estimates tokens conservatively using 2.5 divisor', () => {
+test('estimateTokenCount: estimates tokens conservatively using default divisor', () => {
   assert.strictEqual(estimateTokenCount('hello'), 2);
-  assert.strictEqual(estimateTokenCount('a'.repeat(100)), 40);
-  assert.strictEqual(estimateTokenCount('a'.repeat(250)), 100);
-  assert.strictEqual(estimateTokenCount('a'.repeat(2500)), 1000);
+  assert.strictEqual(estimateTokenCount('a'.repeat(100)), 29);
+  assert.strictEqual(estimateTokenCount('a'.repeat(250)), 72);
+  assert.strictEqual(estimateTokenCount('a'.repeat(2500)), 715);
 });
 
 test('estimateTokenCount: handles single character', () => {
   assert.strictEqual(estimateTokenCount('x'), 1);
 });
 
-test('estimateTokenCount: rounds up for non-multiples of 2.5', () => {
+test('estimateTokenCount: rounds up for non-multiples of default divisor', () => {
   assert.strictEqual(estimateTokenCount('ab'), 1);
-  assert.strictEqual(estimateTokenCount('abc'), 2);
+  assert.strictEqual(estimateTokenCount('abc'), 1);
   assert.strictEqual(estimateTokenCount('abcd'), 2);
 });
 
