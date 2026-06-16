@@ -1,5 +1,6 @@
 import { getQwenHeaders, getBasicHeaders, getGuestHeaders, getPageForAccount, browserFetch, browserStreamFetch, CHROME_CLIENT_HINTS, CHROME_UA } from './playwright.js';
 import { MAX_PAYLOAD_SIZE } from '../core/model-registry.js';
+import { getAccountCredentials } from '../core/accounts.js';
 import { markAccountRateLimited } from '../core/account-manager.js';
 import { config } from '../core/config.js';
 import crypto from 'crypto';
@@ -787,6 +788,17 @@ export async function createQwenStream(
               return { stream: retryResult.stream, headers: freshHeaders, uiSessionId: chatId, controller, accountId: accountId || 'guest' };
             }
             if (retryResult.body && (retryResult.body.includes('FAIL_SYS_USER_VALIDATE') || retryResult.body.includes('_____tmd_____'))) {
+              console.error(
+                `\n=========================================================================\n` +
+                `🚨 ATENÇÃO: Desafio Anti-Bot (TMD) acionado na conta ${accountId ? (getAccountCredentials(accountId)?.email || accountId) : 'Principal'}!\n` +
+                `A API bloqueou sua requisição e está exigindo a solução do Captcha Deslizante.\n` +
+                `👉 VOCÊ PRECISA USAR A INTERFACE DO PROXY LAUNCHER PARA RESOLVER ISSO:\n` +
+                `   1. Clique no botão azul de 'Bypass de Captcha' no card da proxy.\n` +
+                `   2. Digite o seu e-mail correspondente a essa conta.\n` +
+                `   3. Tente enviar qualquer mensagem no chat para que o Captcha deslize apareça.\n` +
+                `   4. Resolva-o manualmente na janela.\n` +
+                `=========================================================================\n`
+              );
               throw new QwenUpstreamError('Qwen TMD challenge persists after header refresh.', 'FAIL_SYS_USER_VALIDATE', 403);
             }
             if (retryResult.body) {
@@ -796,6 +808,17 @@ export async function createQwenStream(
             if (retryErr instanceof QwenUpstreamError) throw retryErr;
             console.error('[Qwen] Browser TMD retry failed:', (retryErr as Error).message);
           }
+          console.error(
+            `\n=========================================================================\n` +
+            `🚨 ATENÇÃO: Desafio Anti-Bot (TMD) acionado na conta ${accountId ? (getAccountCredentials(accountId)?.email || accountId) : 'Principal'}!\n` +
+            `A API bloqueou sua requisição e está exigindo a solução do Captcha Deslizante.\n` +
+            `👉 VOCÊ PRECISA USAR A INTERFACE DO PROXY LAUNCHER PARA RESOLVER ISSO:\n` +
+            `   1. Clique no botão azul de 'Bypass de Captcha' no card da proxy.\n` +
+            `   2. Digite o seu e-mail correspondente a essa conta.\n` +
+            `   3. Tente enviar qualquer mensagem no chat para que o Captcha deslize apareça.\n` +
+            `   4. Resolva-o manualmente na janela.\n` +
+            `=========================================================================\n`
+          );
           throw new QwenUpstreamError('Qwen TMD anti-bot challenge detected. Headers were refreshed but the challenge persists.', 'FAIL_SYS_USER_VALIDATE', 403);
         }
         handleErrorBody(peekText, browserResult.status);
@@ -877,6 +900,17 @@ export async function createQwenStream(
 
         const retryPeek = await retryResponse.clone().text().catch(() => '');
         if (retryPeek.includes('FAIL_SYS_USER_VALIDATE') || retryPeek.includes('_____tmd_____')) {
+          console.error(
+            `\n=========================================================================\n` +
+            `🚨 ATENÇÃO: Desafio Anti-Bot (TMD) acionado na conta ${accountId ? (getAccountCredentials(accountId)?.email || accountId) : 'Principal'}!\n` +
+            `A API bloqueou sua requisição e está exigindo a solução do Captcha Deslizante.\n` +
+            `👉 VOCÊ PRECISA USAR A INTERFACE DO PROXY LAUNCHER PARA RESOLVER ISSO:\n` +
+            `   1. Clique no botão azul de 'Bypass de Captcha' no card da proxy.\n` +
+            `   2. Digite o seu e-mail correspondente a essa conta.\n` +
+            `   3. Tente enviar qualquer mensagem no chat para que o Captcha deslize apareça.\n` +
+            `   4. Resolva-o manualmente na janela.\n` +
+            `=========================================================================\n`
+          );
           throw new QwenUpstreamError('Qwen TMD challenge persists after header refresh. The account may need manual captcha resolution.', 'FAIL_SYS_USER_VALIDATE', 403);
         }
 

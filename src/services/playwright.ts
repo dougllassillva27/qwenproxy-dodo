@@ -1047,7 +1047,17 @@ async function loginToQwenWithContext(acctContext: BrowserContext, acctPage: Pag
     }
   }
 
-  console.error(`[Playwright] Login failed for ${email}:`, result.data || result.error);
+  console.error(
+    `\n=========================================================================\n` +
+    `🚨 ATENÇÃO: Falha no login da conta ${email}!\n` +
+    `O sistema antifraude (WAF/Cloudflare/Aliyun) bloqueou o login automático.\n` +
+    `👉 VOCÊ PRECISA USAR A INTERFACE DO PROXY LAUNCHER PARA RESOLVER ISSO:\n` +
+    `   1. Clique no botão azul de 'Bypass de Captcha' no card da proxy.\n` +
+    `   2. Digite o e-mail: ${email}\n` +
+    `   3. Resolva o Captcha/Login manualmente na janela que abrir.\n` +
+    `=========================================================================\n` +
+    `Detalhes do erro: `, result.data || result.error
+  );
   return false;
 }
 

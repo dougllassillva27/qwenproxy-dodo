@@ -489,6 +489,29 @@ export class StreamingToolParser {
       }
     }
     
+    if (calls.length === 0) {
+      const fallbackNameMatch = str.match(/"(?:name|tool_name|tool)"\s*:\s*"([^"]+)"/i);
+      if (fallbackNameMatch) {
+        const toolName = fallbackNameMatch[1];
+        let argsObj: Record<string, unknown> = {};
+        const argsMatch = str.match(/"(?:arguments|args|parameters|input)"\s*:\s*({[\s\S]*)/i);
+        if (argsMatch) {
+          let argsStr = argsMatch[1];
+          const lastBrace = argsStr.lastIndexOf('}');
+          if (lastBrace !== -1) {
+            argsStr = argsStr.substring(0, lastBrace + 1);
+          }
+          argsObj = robustParseJSON(argsStr) || {};
+        }
+        calls.push({
+          id: `call_${crypto.randomUUID()}`,
+          name: toolName,
+          arguments: argsObj
+        });
+        logger.info('[parser] Recovered malformed tool call block via fallback regex in parseToolContent', { toolName });
+      }
+    }
+    
     return calls;
   }
 

@@ -13,6 +13,7 @@ const envSchema = z.object({
   HTTP_TIMEOUT: z.string().default('30000'),
   HEADERS_TIMEOUT: z.string().default('60000'),
   CHAT_TIMEOUT: z.string().default('120000'),
+  STREAM_IDLE_TIMEOUT: z.string().default('180000'),
   CACHE_TTL: z.string().default('3600'),
   RESPONSE_TTL: z.string().default('1800'),
   METRICS_INTERVAL: z.string().default('10000'),
@@ -62,6 +63,7 @@ export const config = {
     http: parseInt(env.HTTP_TIMEOUT),
     headers: parseInt(env.HEADERS_TIMEOUT),
     chat: parseInt(env.CHAT_TIMEOUT),
+    streamIdle: parseInt(env.STREAM_IDLE_TIMEOUT),
   },
   cache: {
     defaultTTL: parseInt(env.CACHE_TTL),
