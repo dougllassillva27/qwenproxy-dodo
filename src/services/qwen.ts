@@ -326,6 +326,9 @@ async function refillPoolForAccount(accountId: string) {
 
 export async function getWarmedChat(accountId?: string) {
   const key = accountId || 'global';
+  if (process.env.TEST_MOCK_PLAYWRIGHT) {
+    return { chatId: 'mock-session', headers: {}, accountId: key, timestamp: Date.now() };
+  }
   let pool = warmPool.get(key);
   if (!pool) { pool = []; warmPool.set(key, pool); }
   cleanupStalePool(key);
@@ -353,6 +356,7 @@ export async function getWarmedChat(accountId?: string) {
 }
 
 export async function warmAllPools(accountIds: string[]) {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) return;
   for (const id of accountIds) refillPoolForAccount(id).catch(() => {});
 }
 
@@ -773,13 +777,28 @@ export async function createQwenStream(
       if (browserResult.body) {
         const peekText = browserResult.body;
         if (peekText.includes('FAIL_SYS_USER_VALIDATE') || peekText.includes('_____tmd_____') || peekText.includes('RGV587_ERROR')) {
-          console.warn('[Qwen] TMD challenge detected via browser, refreshing headers and retrying...');
+          console.warn('[Qwen] TMD challenge detected via browser, running auto-resolution...');
           try {
+            let punishUrl = "";
+            try {
+              const parsed = JSON.parse(peekText);
+              punishUrl = parsed?.data?.punishUrl || "";
+            } catch {}
+
+            const { resolveTmdChallenge } = await import('./playwright.js');
+            await resolveTmdChallenge(accountId || '', punishUrl);
+
             const { headers: freshHeaders } = await getQwenHeaders(true, accountId);
             await sleep(500 + Math.floor(Math.random() * 1000));
             const retryResult = await browserStreamFetch(page, url, {
               method: 'POST',
-              headers: completionHeaders,
+              headers: {
+                ...completionHeaders,
+                'cookie': freshHeaders['cookie'],
+                'bx-ua': freshHeaders['bx-ua'] || '',
+                'bx-umidtoken': freshHeaders['bx-umidtoken'] || '',
+                'user-agent': freshHeaders['user-agent'],
+              },
               body: payloadJson,
               timeoutMs,
             });
@@ -790,16 +809,10 @@ export async function createQwenStream(
             if (retryResult.body && (retryResult.body.includes('FAIL_SYS_USER_VALIDATE') || retryResult.body.includes('_____tmd_____'))) {
               console.error(
                 `\n=========================================================================\n` +
-                `🚨 ATENÇÃO: Desafio Anti-Bot (TMD) acionado na conta ${accountId ? (getAccountCredentials(accountId)?.email || accountId) : 'Principal'}!\n` +
-                `A API bloqueou sua requisição e está exigindo a solução do Captcha Deslizante.\n` +
-                `👉 VOCÊ PRECISA USAR A INTERFACE DO PROXY LAUNCHER PARA RESOLVER ISSO:\n` +
-                `   1. Clique no botão azul de 'Bypass de Captcha' no card da proxy.\n` +
-                `   2. Digite o seu e-mail correspondente a essa conta.\n` +
-                `   3. Tente enviar qualquer mensagem no chat para que o Captcha deslize apareça.\n` +
-                `   4. Resolva-o manualmente na janela.\n` +
+                `🚨 ATENÇÃO: Desafio Anti-Bot (TMD) persistiu na conta ${accountId ? (getAccountCredentials(accountId)?.email || accountId) : 'Principal'}!\n` +
                 `=========================================================================\n`
               );
-              throw new QwenUpstreamError('Qwen TMD challenge persists after header refresh.', 'FAIL_SYS_USER_VALIDATE', 403);
+              throw new QwenUpstreamError('Qwen TMD challenge persists after auto-resolution attempt.', 'FAIL_SYS_USER_VALIDATE', 403);
             }
             if (retryResult.body) {
               handleErrorBody(retryResult.body, retryResult.status);
@@ -808,18 +821,7 @@ export async function createQwenStream(
             if (retryErr instanceof QwenUpstreamError) throw retryErr;
             console.error('[Qwen] Browser TMD retry failed:', (retryErr as Error).message);
           }
-          console.error(
-            `\n=========================================================================\n` +
-            `🚨 ATENÇÃO: Desafio Anti-Bot (TMD) acionado na conta ${accountId ? (getAccountCredentials(accountId)?.email || accountId) : 'Principal'}!\n` +
-            `A API bloqueou sua requisição e está exigindo a solução do Captcha Deslizante.\n` +
-            `👉 VOCÊ PRECISA USAR A INTERFACE DO PROXY LAUNCHER PARA RESOLVER ISSO:\n` +
-            `   1. Clique no botão azul de 'Bypass de Captcha' no card da proxy.\n` +
-            `   2. Digite o seu e-mail correspondente a essa conta.\n` +
-            `   3. Tente enviar qualquer mensagem no chat para que o Captcha deslize apareça.\n` +
-            `   4. Resolva-o manualmente na janela.\n` +
-            `=========================================================================\n`
-          );
-          throw new QwenUpstreamError('Qwen TMD anti-bot challenge detected. Headers were refreshed but the challenge persists.', 'FAIL_SYS_USER_VALIDATE', 403);
+          throw new QwenUpstreamError('Qwen TMD anti-bot challenge detected and auto-resolution failed.', 'FAIL_SYS_USER_VALIDATE', 403);
         }
         handleErrorBody(peekText, browserResult.status);
       }
@@ -861,8 +863,17 @@ export async function createQwenStream(
   if (response.ok && !responseContentType.includes('text/event-stream') && response.body) {
     const peekText = await response.clone().text().catch(() => '');
     if (peekText.includes('FAIL_SYS_USER_VALIDATE') || peekText.includes('_____tmd_____') || peekText.includes('RGV587_ERROR')) {
-      console.warn('[Qwen] TMD challenge detected, refreshing headers and retrying...');
+      console.warn('[Qwen] TMD challenge detected, running auto-resolution...');
       try {
+        let punishUrl = "";
+        try {
+          const parsed = JSON.parse(peekText);
+          punishUrl = parsed?.data?.punishUrl || "";
+        } catch {}
+
+        const { resolveTmdChallenge } = await import('./playwright.js');
+        await resolveTmdChallenge(accountId || '', punishUrl);
+
         const { headers: freshHeaders } = await getQwenHeaders(true, accountId);
         await sleep(500 + Math.floor(Math.random() * 1000));
         const retryController = new AbortController();
@@ -900,18 +911,7 @@ export async function createQwenStream(
 
         const retryPeek = await retryResponse.clone().text().catch(() => '');
         if (retryPeek.includes('FAIL_SYS_USER_VALIDATE') || retryPeek.includes('_____tmd_____')) {
-          console.error(
-            `\n=========================================================================\n` +
-            `🚨 ATENÇÃO: Desafio Anti-Bot (TMD) acionado na conta ${accountId ? (getAccountCredentials(accountId)?.email || accountId) : 'Principal'}!\n` +
-            `A API bloqueou sua requisição e está exigindo a solução do Captcha Deslizante.\n` +
-            `👉 VOCÊ PRECISA USAR A INTERFACE DO PROXY LAUNCHER PARA RESOLVER ISSO:\n` +
-            `   1. Clique no botão azul de 'Bypass de Captcha' no card da proxy.\n` +
-            `   2. Digite o seu e-mail correspondente a essa conta.\n` +
-            `   3. Tente enviar qualquer mensagem no chat para que o Captcha deslize apareça.\n` +
-            `   4. Resolva-o manualmente na janela.\n` +
-            `=========================================================================\n`
-          );
-          throw new QwenUpstreamError('Qwen TMD challenge persists after header refresh. The account may need manual captcha resolution.', 'FAIL_SYS_USER_VALIDATE', 403);
+          throw new QwenUpstreamError('Qwen TMD challenge persists after auto-resolution attempt.', 'FAIL_SYS_USER_VALIDATE', 403);
         }
 
         if (retryResponse.ok && retryResponse.body) {
@@ -922,29 +922,34 @@ export async function createQwenStream(
         console.error('[Qwen] TMD retry failed:', (retryErr as Error).message);
       }
 
-      throw new QwenUpstreamError('Qwen TMD anti-bot challenge detected. Headers were refreshed but the challenge persists.', 'FAIL_SYS_USER_VALIDATE', 403);
+      throw new QwenUpstreamError('Qwen TMD anti-bot challenge detected and auto-resolution failed.', 'FAIL_SYS_USER_VALIDATE', 403);
     } else {
-      handleErrorBody(peekText, response.status);
+      handleErrorBody(peekText, response.status, response.ok);
     }
   }
 
-  if (!response.ok || !response.body) {
-    const errText = await response.text().catch(() => '');
-    const contentType = response.headers.get('content-type') || '';
+  let errText = '';
+  const contentType = response.headers.get('content-type') || '';
 
+  if (!response.ok || !response.body) {
+    errText = await response.text().catch(() => '');
     if (contentType.includes('application/json')) {
       handleJsonErrorBody(errText);
     }
     throw new Error(`Failed to fetch from Qwen: ${response.status} ${response.statusText} - ${errText}`);
   }
 
+  if (errText && contentType.includes('application/json')) {
+    handleJsonErrorBody(errText);
+  }
+
   return { stream: response.body, headers: chatHeaders, uiSessionId: chatId, controller, accountId: accountId || 'guest' };
 }
 
-function handleErrorBody(peekText: string, status: number): never {
+function handleErrorBody(peekText: string, status: number, isOk: boolean): void {
   try {
     const errorJson = JSON.parse(peekText);
-    if (errorJson && (errorJson.success === false || errorJson.error)) {
+    if (errorJson && (errorJson.success === false || errorJson.error || errorJson.code === 'RateLimited')) {
       const code = errorJson.data?.code || errorJson.code || 'UpstreamError';
       const details = errorJson.data?.details || errorJson.message || errorJson.error?.message || 'Qwen returned an error';
       const wait = errorJson.data?.num !== undefined ? ` Wait about ${errorJson.data.num} hour(s) before trying again.` : '';
@@ -955,7 +960,9 @@ function handleErrorBody(peekText: string, status: number): never {
   } catch (e) {
     if (e instanceof QwenUpstreamError) throw e;
   }
-  throw new Error(`Qwen returned status ${status}: ${peekText.slice(0, 500)}`);
+  if (!isOk) {
+    throw new Error(`Qwen returned status ${status}: ${peekText.slice(0, 500)}`);
+  }
 }
 
 function handleJsonErrorBody(errText: string): never {

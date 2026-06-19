@@ -372,13 +372,22 @@ export async function initPlaywright(headless = true, browserType: BrowserType =
       '--disable-gpu',
       '--disable-software-rasterizer',
       '--disable-dev-shm-usage',
-      '--js-flags=--max-old-space-size=256'
+      '--js-flags=--max-old-space-size=256',
+      '--window-size=500,400',
+      '--disk-cache-size=1048576',
+      '--media-cache-size=1048576',
+      '--prerender-from-omnibox=disabled'
     ]
   });
 
   // Bloqueia recursos pesados/não essenciais para economizar RAM e banda em background
   await context.route('**/*.{png,jpg,jpeg,gif,webp,svg,mp4,webm,ogg,mp3}', route => {
-    route.abort();
+    const url = route.request().url();
+    if (url.includes('captcha') || url.includes('alicdn') || url.includes('aliyun') || url.includes('_____tmd_____')) {
+      route.continue();
+    } else {
+      route.abort();
+    }
   });
 
   await context.addInitScript(getStealthScript());
@@ -515,7 +524,25 @@ export async function getGuestHeaders(): Promise<Record<string, string>> {
       channel,
       userAgent: CHROME_UA,
       ignoreDefaultArgs: ['--enable-automation'],
-      args: ['--disable-blink-features=AutomationControlled', '--disable-features=IsolateOrigins,site-per-process', '--disable-infobars', '--no-first-run', '--no-default-browser-check']
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-infobars',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-extensions',
+        '--disable-default-apps',
+        '--disable-sync',
+        '--mute-audio',
+        '--disable-background-networking',
+        '--disable-gpu',
+        '--disable-dev-shm-usage',
+        '--js-flags=--max-old-space-size=256',
+        '--window-size=500,400',
+        '--disk-cache-size=1048576',
+        '--media-cache-size=1048576',
+        '--prerender-from-omnibox=disabled'
+      ]
     });
     await guestContext.addInitScript(getStealthScript());
     guestPage = await guestContext.newPage();
@@ -918,13 +945,22 @@ export async function initPlaywrightForAccount(account: QwenAccount, headless = 
       '--disable-gpu',
       '--disable-software-rasterizer',
       '--disable-dev-shm-usage',
-      '--js-flags=--max-old-space-size=256'
+      '--js-flags=--max-old-space-size=256',
+      '--window-size=500,400',
+      '--disk-cache-size=1048576',
+      '--media-cache-size=1048576',
+      '--prerender-from-omnibox=disabled'
     ]
   });
 
   // Bloqueia recursos pesados/não essenciais para economizar RAM e banda em background
   await acctContext.route('**/*.{png,jpg,jpeg,gif,webp,svg,mp4,webm,ogg,mp3}', route => {
-    route.abort();
+    const url = route.request().url();
+    if (url.includes('captcha') || url.includes('alicdn') || url.includes('aliyun') || url.includes('_____tmd_____')) {
+      route.continue();
+    } else {
+      route.abort();
+    }
   });
 
   await acctContext.addInitScript(getStealthScript());
@@ -1290,4 +1326,215 @@ export async function browserStreamFetch(
     reqId,
     abort: abortFn,
   };
+}
+
+export async function resolveTmdChallenge(
+  accountId: string,
+  punishUrl: string,
+): Promise<void> {
+  let page = accountId ? accountPages.get(accountId) : activePage;
+  if (!page && accountId === 'guest') {
+    page = guestPage;
+  }
+
+  if (!page || page.isClosed()) {
+    console.warn(
+      `[Playwright] Cannot resolve TMD: No active page for account ${accountId}`
+    );
+    return;
+  }
+
+  let cleanUrl = punishUrl;
+  if (cleanUrl && cleanUrl.startsWith("http")) {
+    try {
+      const parsed = new URL(cleanUrl);
+      if (parsed.port === "443") {
+        parsed.port = "";
+      }
+      cleanUrl = parsed.toString().replace(/([^:])\/{2,}/g, "$1/");
+    } catch (err) {
+      console.warn("[Playwright] Failed to parse and clean punish URL:", err);
+    }
+  } else {
+    cleanUrl = "https://chat.qwen.ai/";
+  }
+
+  console.log(
+    `[Playwright] Navigating browser to TMD punish URL: ${cleanUrl.substring(0, 120)}...`
+  );
+  await page
+    .goto(cleanUrl, { waitUntil: "networkidle", timeout: 15000 })
+    .catch(() => {});
+
+  const { getAccountCredentials } = await import("../core/accounts.js");
+  const emailName = accountId ? (getAccountCredentials(accountId)?.email || accountId) : "Principal";
+  console.log(
+    `\n=========================================================================\n` +
+      `🚨 [CAPTCHA] Desafio de Captcha Deslizante (TMD) detectado na conta ${emailName}!\n` +
+      `=========================================================================\n`
+  );
+
+  // --- RESOLVER AUTOMÁTICO COM VISION ---
+  let resolved = false;
+  const iframeSelector = 'iframe#baxia-dialog-content, iframe[src*="_____tmd_____/punish"]';
+  const sliderSelector = '#nc_1_n1z, .btn_slide, .nc_iconfont.btn_slide, span[id*="_n1z"]';
+  const trackSelector = '#nc_1_n1t, .nc_scale, div[id*="_n1t"]';
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const hasIframe = await page.locator(iframeSelector).first().isVisible().catch(() => false);
+      const frame = hasIframe ? page.frameLocator(iframeSelector) : page;
+      const slider = frame.locator(sliderSelector).first();
+
+      // Wait for slider to be visible
+      const isVisible = await slider.isVisible().catch(() => false);
+      if (!isVisible) {
+        if (attempt > 1) {
+          console.log("[Captcha] Slider is no longer visible. Solved.");
+          resolved = true;
+          break;
+        }
+        console.log("[Captcha] Slider not visible yet. Waiting...");
+        await sleep(1500);
+        const retryVisible = await slider.isVisible().catch(() => false);
+        if (!retryVisible) {
+          console.log("[Captcha] Slider element not found.");
+          break;
+        }
+      }
+
+      const sliderBox = await slider.boundingBox();
+      if (!sliderBox) {
+        console.warn(`[Captcha] Attempt ${attempt}: Slider bounding box not found.`);
+        await sleep(1000);
+        continue;
+      }
+
+      const track = frame.locator(trackSelector).first();
+      const trackBox = await track.boundingBox();
+      let dragDistance = trackBox ? trackBox.width - sliderBox.width : 260;
+
+      // Attempt 2+ uses the captchaResolve microservice via DeepSeek Vision
+      if (attempt >= 2) {
+        console.log(`[Captcha] Attempt ${attempt}: Using Vision-based captchaResolve...`);
+        const containerSelector = '#nc_1_wrapper, .nc-container, #nocaptcha, div[id*="nc_"][id*="_wrapper"], .nc_wrapper';
+        const containerElement = frame.locator(containerSelector).first();
+        const screenshotBuffer = await containerElement.screenshot().catch((err) => {
+          console.error("[Captcha] [ERROR] Screenshot failed:", err.message);
+          return null;
+        });
+
+        if (screenshotBuffer) {
+          const base64Image = screenshotBuffer.toString("base64");
+          console.log("[Captcha] Sending screenshot to captchaResolve (http://localhost:50006/resolve)...");
+          const resolveResponse = await fetch("http://localhost:50006/resolve", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              image: base64Image,
+              accountId: emailName,
+            }),
+          }).catch(() => null);
+
+          if (resolveResponse && resolveResponse.ok) {
+            const resolveData = await resolveResponse.json().catch(() => null) as any;
+            if (resolveData && resolveData.success && typeof resolveData.x === "number") {
+              dragDistance = resolveData.x;
+              console.log(`[Captcha] Coordinate X obtained from DeepSeek Vision: ${dragDistance}px.`);
+            } else {
+              console.warn("[Captcha] Invalid response from captchaResolve:", resolveData);
+            }
+          } else {
+            console.warn("[Captcha] captchaResolve microservice is not responding.");
+          }
+        }
+      }
+
+      const startX = sliderBox.x + sliderBox.width / 2;
+      const startY = sliderBox.y + sliderBox.height / 2;
+      console.log(`[Captcha] Attempt ${attempt}: Dragging slider from x=${startX}, y=${startY} by ${dragDistance}px`);
+
+      await page.mouse.move(startX, startY);
+      await sleep(200);
+      await page.mouse.down();
+      await sleep(150);
+
+      // Humanized dragging
+      const steps = 15;
+      for (let i = 1; i <= steps; i++) {
+        const progress = i / steps;
+        const currentX = startX + dragDistance * progress;
+        const currentY = startY + Math.sin(progress * Math.PI) * (Math.random() * 3 - 1.5);
+        await page.mouse.move(currentX, currentY);
+        await sleep(15 + Math.floor(Math.random() * 15));
+      }
+
+      await sleep(200);
+      await page.mouse.up();
+
+      console.log("[Captcha] Dragged. Waiting 3s to validate...");
+      await sleep(3000);
+
+      const stillVisible = await frame.locator(sliderSelector).first().isVisible().catch(() => false);
+      if (!stillVisible) {
+        console.log("[Captcha] Baxia captcha solved successfully.");
+        resolved = true;
+        break;
+      }
+
+      console.warn(`[Captcha] Attempt ${attempt} failed to solve captcha. Refreshing...`);
+      const refreshBtn = frame.locator('.nc-lang-cnt a, .errloading a, a:has-text("refresh")').first();
+      if (await refreshBtn.isVisible().catch(() => false)) {
+        await refreshBtn.click().catch(() => {});
+        await sleep(1500);
+      }
+    } catch (err: any) {
+      console.error(`[Captcha] Error in attempt ${attempt}:`, err.message);
+      await sleep(1000);
+    }
+  }
+
+  // --- FALLBACK MANUAL SE A AUTOMACAO FALHAR ---
+  if (!resolved) {
+    console.log(
+      `\n=========================================================================\n` +
+        `⚠️ [CAPTCHA] A resolucao automatica falhou ou nao pode ser executada.\n` +
+        `👉 VOCÊ TEM 25 SEGUNDOS PARA RESOLVER O SLIDER NA TELA DO NAVEGADOR ABERTA.\n` +
+        `=========================================================================\n`
+    );
+    // Beep and PowerShell popup
+    process.stdout.write("\x07");
+    const { exec } = await import("child_process");
+    const psCommand = `powershell -Command "
+      $sig = '[DllImport(\\\"user32.dll\\\")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow); [DllImport(\\\"user32.dll\\\")] public static extern bool SetForegroundWindow(IntPtr hWnd);';
+      $type = Add-Type -MemberDefinition $sig -Name WindowAPI -PassThru;
+      $procs = Get-Process | Where-Object { $_.MainWindowTitle -like \\\"*Qwen*\\\" -or $_.CommandLine -like \\\"*playwright*\\\" };
+      foreach ($p in $procs) {
+        $hwnd = $p.MainWindowHandle;
+        if ($hwnd -ne [IntPtr]::Zero) {
+          $null = $type::ShowWindowAsync($hwnd, 9);
+          $null = $type::SetForegroundWindow($hwnd);
+        }
+      }
+      [System.Windows.Forms.MessageBox]::Show(\\\"Resolva o captcha para a conta: ${emailName}\\\", \\\"Captcha Detectado\\\");
+    "`;
+    exec(psCommand, () => {});
+    await sleep(25000); // 25 segundos de tempo para o usuário resolver
+  }
+
+  console.log(
+    `[Playwright] Captcha sleep finished. Returning account page to Qwen home...`
+  );
+  await page
+    .goto("https://chat.qwen.ai/", {
+      waitUntil: "domcontentloaded",
+      timeout: 15000,
+    })
+    .catch(() => {});
+  
+  const cacheKey = accountId || 'global';
+  cookieCaches.delete(cacheKey);
+  const cache = getAccountHeaderCache(cacheKey);
+  cache.cachedQwenHeaders = null;
+  await sleep(2000);
 }

@@ -15,6 +15,12 @@ function setupFetchMock(handler: (url: string, init?: RequestInit) => Response |
       if (urlStr.includes('/api/models')) {
          return new Response(JSON.stringify({ data: [{ id: 'qwen3.6-plus', owned_by: 'qwen' }] }), { status: 200 });
       }
+      if (urlStr.includes('/api/v2/chats/new')) {
+        return new Response(JSON.stringify({ success: true, chat_id: 'mock-session' }), { status: 200 });
+      }
+      if (urlStr.includes('/api/v2/chats')) {
+        return new Response(JSON.stringify({ success: true, data: [{ id: 'mock-session', title: 'Nova Conversa', created_at: 'now', updated_at: 'now' }] }), { status: 200 });
+      }
       return handler(urlStr, init);
     }
     return originalFetch(input);
@@ -121,7 +127,7 @@ test('caching-streaming and cache-control: returns prompt_tokens_details', async
         c.close();
       }
     });
-    return new Response(stream, { status: 200 });
+    return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
   });
 
   try {
@@ -177,7 +183,7 @@ test('session-parent-tracking: appends messages using response message_id as par
         c.close();
       }
     });
-    return new Response(stream, { status: 200 });
+    return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
   });
 
   try {
@@ -218,8 +224,9 @@ test('session-parent-tracking: appends messages using response message_id as par
     assert.strictEqual(capturedPayloads.length, 2);
     // In Turn 1, parent_id should be null (mock-session is fresh)
     assert.strictEqual(capturedPayloads[0].parent_id, null);
-    // In Turn 2, parent_id should be qwen-1001 (the ID returned in Turn 1)
-    assert.strictEqual(capturedPayloads[1].parent_id, 'qwen-1001', 'Turn 2 should use response_id from Turn 1 as parent');
+    
+    // In Turn 2, parent_id should be null because concurrency isolation disables parent tracking
+    assert.strictEqual(capturedPayloads[1].parent_id, null, 'Turn 2 should use null as parent due to concurrency isolation');
     assert.strictEqual(capturedPayloads[1].messages[0].content, 'User: Turn 1\n\nAssistant: Response 1\n\nUser: Turn 2\n\n', 'Should send the full OpenAI message history');
   } finally {
     restore();
