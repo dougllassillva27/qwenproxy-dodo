@@ -63,12 +63,6 @@ test('Chat Completions endpoint with qwen3.6-plus (thinking enabled)', async () 
       });
       return new Response(stream, { status: 200 });
     }
-    if (url.includes('/api/v2/chats/new')) {
-      return new Response(JSON.stringify({ success: true, chat_id: 'mock-session' }), { status: 200 });
-    }
-    if (url.includes('/api/v2/chats')) {
-      return new Response(JSON.stringify({ success: true, data: [{ id: 'mock-session', title: 'Nova Conversa', created_at: 'now', updated_at: 'now' }] }), { status: 200 });
-    }
     return originalFetch(input);
   };
 
@@ -126,9 +120,8 @@ test('Chat Completions endpoint with qwen3.6-plus (thinking enabled)', async () 
                 }
               }
             }
-          } catch (err) {
+          } catch {
             // Partial JSON ignored
-            // console.error("Parse error:", err);
           }
         }
       }
@@ -179,13 +172,6 @@ test('Chat Completions returns explicit error for non-SSE upstream JSON errors',
     assert.match(body.error.message, /Qwen upstream error: RateLimited/);
     assert.match(body.error.message, /upper limit/);
   } finally {
-    const { clearAccountCooldown, invalidateAccountsCache } = await import('../core/account-manager.js');
-    clearAccountCooldown('global');
-    clearAccountCooldown('2f73de0b-4e71-44df-b471-c4c6ce93264f');
-    clearAccountCooldown('9cdaee61-f8da-413c-902e-df5e0bf33039');
-    clearAccountCooldown('ce6ebe3c-f986-4986-936c-6c2aae0e74d0');
-    clearAccountCooldown('26850493-a0cd-4c2c-a547-2a8a6d676cdf');
-    invalidateAccountsCache();
     globalThis.fetch = originalFetch;
     await closePlaywright();
   }

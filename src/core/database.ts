@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import path from 'path'
 import fs from 'fs'
+import { encrypt, isEncrypted } from './crypto-utils.js'
 
 const DATA_DIR = path.resolve('data')
 const DB_PATH = path.join(DATA_DIR, 'qwenproxy.db')
@@ -26,6 +27,7 @@ export function getDatabase(): Database.Database {
 
   runMigrations(db)
   migrateFromJson(db)
+  encryptPlaintextPasswords(db)
 
   return db
 }
@@ -43,16 +45,32 @@ function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);
   `)
 
-  // Add cooldown columns if they don't exist
   try {
     db.exec(`ALTER TABLE accounts ADD COLUMN cooldown_until INTEGER DEFAULT 0;`)
-  } catch (err) {
-    // Column already exists or error
-  }
+  } catch { /* column may already exist */ }
   try {
     db.exec(`ALTER TABLE accounts ADD COLUMN cooldown_reason TEXT;`)
-  } catch (err) {
-    // Column already exists or error
+  } catch { /* column may already exist */ }
+}
+
+function encryptPlaintextPasswords(db: Database.Database): void {
+  const rows = db.prepare('SELECT id, password FROM accounts').all() as Array<{ id: string; password: string }>
+  const update = db.prepare('UPDATE accounts SET password = ? WHERE id = ?')
+  let migrated = 0
+
+  const migrate = db.transaction(() => {
+    for (const row of rows) {
+      if (row.password && !isEncrypted(row.password)) {
+        update.run(encrypt(row.password), row.id)
+        migrated++
+      }
+    }
+  })
+
+  migrate()
+
+  if (migrated > 0) {
+    console.log(`[Database] Encrypted ${migrated} plaintext password(s) in database`)
   }
 }
 

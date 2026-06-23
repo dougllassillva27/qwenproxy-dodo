@@ -22,12 +22,6 @@ test('Concurrent requests are serialized by mutex', async () => {
         { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
       );
     }
-    if (url.includes('/api/v2/chats/new')) {
-      return new Response(JSON.stringify({ success: true, chat_id: 'mock-session' }), { status: 200 });
-    }
-    if (url.includes('/api/v2/chats')) {
-      return new Response(JSON.stringify({ success: true, data: [{ id: 'mock-session', title: 'Nova Conversa', created_at: 'now', updated_at: 'now' }] }), { status: 200 });
-    }
     return originalFetch(input);
   };
 

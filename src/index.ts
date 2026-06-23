@@ -30,7 +30,7 @@ console.warn = (...args) => originalWarn(getTimestamp(), ...args);
 console.error = (...args) => originalError(getTimestamp(), ...args);
 
 import('./api/server.js').then(({ startServer }) => {
-  startServer().catch(error => {
+  startServer().catch((error: any) => {
     console.error('Failed to start server:', error)
     process.exit(1)
   })

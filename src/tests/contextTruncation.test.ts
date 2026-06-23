@@ -135,6 +135,27 @@ test('truncateMessages: handles empty messages array', () => {
   assert.strictEqual(result.length, 0);
 });
 
+test('truncateMessages: preserves earlier tool memory when truncating history', () => {
+  const messages = [
+    {
+      role: 'assistant',
+      content: 'I will inspect the file.',
+      tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: '/tmp/a.txt' }) } }],
+    },
+    {
+      role: 'tool',
+      name: 'read_file',
+      content: 'old tool result that should be summarized',
+    },
+    { role: 'user', content: 'x'.repeat(5000) },
+  ];
+  const result = truncateMessages(messages, 1000);
+  assert.ok(result.some(m => m.content.includes('[Earlier tool memory]')));
+  assert.ok(result.some(m => m.content.includes('read_file')));
+  assert.ok(result.some(m => m.content.includes('/tmp/a.txt')));
+  assert.ok(result.some(m => m.content.includes('old tool result')));
+});
+
 test('truncateMessages: handles empty messages with system prompt fallback', () => {
   const result = truncateMessages([], 5, 'fallback');
   assert.strictEqual(result.length, 1);

@@ -1,350 +1,31 @@
-/*
- * File: chat.ts
- * Project: qwenproxy
- * Author: Pedro Farias
- * Created: 2026-05-09
- * 
- * Last Modified: Sat May 09 2026
- * Modified By: Pedro Farias
- */
-
-import { Context } from 'hono';
-import { stream as honoStream } from 'hono/streaming';
+import type { Context } from 'hono';
 import crypto from 'crypto';
-import { createQwenStream, updateSessionParent, RetryableQwenStreamError } from '../services/qwen.js';
-import { OpenAIRequest, ChoiceDelta, Message } from '../utils/types.js';
-import { registry } from '../tools/registry.js';
-import type { FunctionToolDefinition } from '../tools/types.js';
-import { robustParseJSON } from '../utils/json.js';
-import { StreamingToolParser } from '../tools/parser.js';
-import { QwenStreamParser, ParsedChunkResult } from '../utils/qwen-stream-parser.js';
+import { createQwenStream, RetryableQwenStreamError } from '../services/qwen.js';
+import type { OpenAIRequest } from '../utils/types.js';
 import { getModelContextWindow } from '../core/model-registry.js'
 import { truncateMessages, estimateTokenCount } from '../utils/context-truncation.js';
-import { getNextAccount, getNextAvailableAccount, markAccountRateLimited, getAccountCooldownInfo } from '../core/account-manager.js';
+import { getNextAccount, getNextAvailableAccount, markAccountRateLimited, getAccountCooldownInfo, markAccountInUse, releaseAccountInUse, getInUseAccounts } from '../core/account-manager.js';
 import { loadAccounts } from '../core/accounts.js';
 import { registerStream, removeStream, getStream } from '../core/stream-registry.js';
 import { metrics } from '../core/metrics.js'
+import {
+  getForcedToolName,
+  getRecentToolNames,
+  selectCandidateTools,
+  buildCompactToolManifest,
+  buildToolCallContract,
+  getToolChoiceMode,
+} from './tool-handler.js';
+import { handleStreamingResponse, handleNonStreamingResponse } from './stream-handler.js';
 
-export interface DeltaResult {
-  delta: string;
-  matchedContent: string;
-  contentLength: number;
-  contentSuffix: string;
-}
-
-export function getIncrementalDelta(oldStr: string, newStr: string, prevLength: number = 0, prevSuffix: string = ''): DeltaResult {
-  if (!oldStr) {
-    return { 
-      delta: newStr, 
-      matchedContent: newStr,
-      contentLength: newStr.length,
-      contentSuffix: newStr.slice(-64)
-    };
-  }
-  if (newStr === oldStr) {
-    return { delta: '', matchedContent: oldStr, contentLength: prevLength, contentSuffix: prevSuffix };
-  }
-
-  // Ultra-fast path: use length tracking to avoid O(n) startsWith on large strings
-  if (newStr.length > prevLength && prevLength > 0) {
-    const delta = newStr.slice(prevLength);
-    const checkLen = Math.min(64, prevLength);
-    const expectedSuffix = prevSuffix.slice(-checkLen);
-    const actualSuffix = newStr.slice(prevLength - checkLen, prevLength);
-    
-    if (expectedSuffix === actualSuffix) {
-      return { 
-        delta, 
-        matchedContent: newStr,
-        contentLength: newStr.length,
-        contentSuffix: newStr.slice(-64)
-      };
-    }
-  }
-
-  // Fallback: startsWith check for edge cases
-  if (newStr.startsWith(oldStr)) {
-    const delta = newStr.slice(oldStr.length);
-    return { 
-      delta, 
-      matchedContent: newStr,
-      contentLength: newStr.length,
-      contentSuffix: newStr.slice(-64)
-    };
-  }
-
-  // Segment-based prefix matching (rare path)
-  const scanWindow = Math.min(2000, oldStr.length);
-  const maxLen = Math.min(scanWindow, newStr.length);
-
-  let commonPrefixLen = 0;
-  const segmentLen = 64;
-  while (commonPrefixLen + segmentLen <= maxLen) {
-    if (oldStr.slice(commonPrefixLen, commonPrefixLen + segmentLen) !==
-        newStr.slice(commonPrefixLen, commonPrefixLen + segmentLen)) {
-      break;
-    }
-    commonPrefixLen += segmentLen;
-  }
-
-  while (commonPrefixLen < maxLen && oldStr[commonPrefixLen] === newStr[commonPrefixLen]) {
-    commonPrefixLen++;
-  }
-
-  const threshold = Math.min(scanWindow, 4);
-  if (commonPrefixLen >= threshold) {
-    return { 
-      delta: newStr.substring(commonPrefixLen), 
-      matchedContent: newStr,
-      contentLength: newStr.length,
-      contentSuffix: newStr.slice(-64)
-    };
-  }
-
-  const combined = oldStr + newStr;
-  return { 
-    delta: newStr, 
-    matchedContent: combined,
-    contentLength: combined.length,
-    contentSuffix: combined.slice(-64)
-  };
-}
-
-function parseQwenErrorPayload(raw: string): { message: string; status: number } | null {
-  const text = raw.trim();
-  if (!text || text.startsWith('data: ')) return null;
-
-  try {
-    const payload = JSON.parse(text);
-    if (payload && payload.success === false) {
-      const code = payload.data?.code || payload.code || 'UpstreamError';
-      const details = payload.data?.details || payload.message || 'Qwen returned an error';
-      const wait = payload.data?.num !== undefined ? ` Wait about ${payload.data.num} hour(s) before trying again.` : '';
-      const status = code === 'RateLimited' ? 429 : (code === 'Not_Found' ? 404 : 502);
-      return { message: `Qwen upstream error: ${code}: ${details}.${wait}`, status };
-    }
-    if (payload && payload.error) {
-      const msg = typeof payload.error === 'string' ? payload.error : (payload.error.message || JSON.stringify(payload.error));
-      return { message: `Qwen upstream error: ${msg}`, status: 502 };
-    }
-  } catch {
-    return { message: `Qwen upstream returned non-SSE response: ${text.slice(0, 300)}`, status: 502 };
-  }
-
-  return null;
-}
-
-function getToolFunction(tool: FunctionToolDefinition | any): any {
-  return tool?.type === 'function' ? tool.function : tool;
-}
-
-function getToolName(tool: FunctionToolDefinition | any): string {
-  return getToolFunction(tool)?.name || '';
-}
-
-function getToolDescription(tool: FunctionToolDefinition | any): string {
-  return getToolFunction(tool)?.description || '';
-}
-
-function getToolParameters(tool: FunctionToolDefinition | any): Record<string, any> {
-  return getToolFunction(tool)?.parameters?.properties || {};
-}
-
-function getRequiredParams(tool: FunctionToolDefinition | any): Set<string> {
-  return new Set(getToolFunction(tool)?.parameters?.required || []);
-}
-
-function compactPromptText(text: string, maxChars = 180): string {
-  const compact = text.replace(/\s+/g, ' ').trim();
-  if (compact.length <= maxChars) return compact;
-  return `${compact.slice(0, maxChars)}...`;
-}
-
-function getForcedToolName(toolChoice: any): string {
-  if (toolChoice && typeof toolChoice === 'object' && toolChoice.function?.name) {
-    return toolChoice.function.name;
-  }
-  return '';
-}
-
-function tokenizeForToolScoring(text: string): Set<string> {
-  const tokens = new Set<string>();
-  for (const token of text.toLowerCase().match(/[a-z0-9_./-]+/g) || []) {
-    if (token.length >= 3) tokens.add(token);
-  }
-  return tokens;
-}
-
-function scoreToolForContext(tool: FunctionToolDefinition, contextText: string, forcedToolName: string, recentToolNames: Set<string>): number {
-  const name = getToolName(tool);
-  const description = getToolDescription(tool);
-  const params = Object.keys(getToolParameters(tool));
-  const tokens = tokenizeForToolScoring(contextText);
-  let score = 0;
-
-  if (forcedToolName && name === forcedToolName) score += 100;
-  if (recentToolNames.has(name)) score += 35;
-
-  const nameParts = name.toLowerCase().split(/[_./-]+/).filter(Boolean);
-  for (const part of nameParts) {
-    if (part.length >= 3 && tokens.has(part)) score += 20;
-  }
-
-  const toolText = `${name} ${description} ${params.join(' ')}`.toLowerCase();
-  for (const token of tokens) {
-    if (toolText.includes(token)) score += 2;
-  }
-
-  for (const param of params) {
-    if (tokens.has(param.toLowerCase())) score += 3;
-  }
-
-  return score;
-}
-
-function getRecentToolNames(messages: Message[]): Set<string> {
-  const recentToolNames = new Set<string>();
-  const recentMessages = messages.slice(-12);
-
-  for (const msg of recentMessages) {
-    if (msg.role === 'assistant' && Array.isArray(msg.tool_calls)) {
-      for (const call of msg.tool_calls) {
-        if (call?.function?.name) recentToolNames.add(call.function.name);
-      }
-    }
-    if ((msg.role === 'tool' || msg.role === 'function') && msg.name) {
-      recentToolNames.add(msg.name);
-    }
-  }
-
-  return recentToolNames;
-}
-
-function selectCandidateTools(
-  tools: FunctionToolDefinition[],
-  contextText: string,
-  forcedToolName = '',
-  recentToolNames: Set<string> = new Set(),
-  maxTools = 12
-): FunctionToolDefinition[] {
-  if (tools.length <= maxTools) return tools;
-
-  const scored = tools
-    .map(tool => ({ tool, score: scoreToolForContext(tool, contextText, forcedToolName, recentToolNames) }))
-    .filter(entry => entry.score > 0 || (forcedToolName && getToolName(entry.tool) === forcedToolName))
-    .sort((a, b) => b.score - a.score || getToolName(a.tool).localeCompare(getToolName(b.tool)));
-
-  if (scored.length === 0) {
-    return tools.slice(0, maxTools);
-  }
-
-  return scored.slice(0, maxTools).map(entry => entry.tool);
-}
-
-function buildCompactToolManifest(tools: FunctionToolDefinition[], forcedToolName = ''): string {
-  if (tools.length === 0) return '';
-
-  const lines = tools.map(tool => {
-    const name = getToolName(tool);
-    const description = compactPromptText(getToolDescription(tool), 140);
-    const params = getToolParameters(tool);
-    const required = getRequiredParams(tool);
-    const signature = Object.entries(params)
-      .map(([paramName, schema]: [string, any]) => {
-        const optional = required.has(paramName) ? '' : '?';
-        const type = schema?.type || 'any';
-        return `${paramName}${optional}: ${type}`;
-      })
-      .join(', ');
-
-    const marker = forcedToolName && name === forcedToolName ? ' [required]' : '';
-    return `${name}(${signature})${description ? ` - ${description}` : ''}${marker}`;
-  });
-
-  return `[COMPACT TOOL MANIFEST]\n${lines.join('\n')}`;
-}
-
-function buildToolCallContract(
-  tools: FunctionToolDefinition[],
-  forcedToolName = '',
-  parallelToolCalls = true
-): string {
-  const names = tools.map(getToolName).filter(Boolean);
-  const toolList = names.length > 0 ? names.join(', ') : 'none';
-  const forcedLine = forcedToolName
-    ? `This turn strongly expects the tool "${forcedToolName}". If you call a tool, prefer this exact name.`
-    : 'Only call a tool when the user request requires an external action.';
-  const parallelLine = parallelToolCalls
-    ? 'You may emit multiple tool call blocks only when the user explicitly asks for multiple independent actions.'
-    : 'Emit at most one tool call block.';
-
-  return `[TOOL CALL CONTRACT - MUST FOLLOW]
-Available tool names: ${toolList}
-Format:
-
-<tool_call>
-{"name": "tool_name", "arguments": {"param_name": "value"}}
-</tool_call>
-
-Rules:
-1. Use exact tool names from the list above or the full TOOLS AVAILABLE section.
-2. Do not invent, guess, rename, or approximate tool names.
-3. Do not output raw JSON as a tool call.
-4. ${forcedLine}
-5. ${parallelLine}
-6. If no tool is needed, do not emit any tool call block.`;
-}
-
-function parseToolArguments(value: unknown): Record<string, unknown> {
-  if (typeof value === 'string') {
-    try {
-      const parsed = JSON.parse(value);
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-    } catch {
-      return {};
-    }
-  }
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return {};
-}
-
-function looksLikeUnwrappedToolCall(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return false;
-  return /["']name["']\s*:/.test(trimmed) && /["']arguments["']\s*:/.test(trimmed);
-}
-
-function parseUnwrappedToolCalls(text: string): Array<{ id: string; name: string; arguments: Record<string, unknown> }> {
-  if (!looksLikeUnwrappedToolCall(text)) return [];
-
-  try {
-    const parsed = robustParseJSON(text);
-    const items = Array.isArray(parsed) ? parsed : [parsed];
-    return items
-      .filter(item => item && typeof item === 'object')
-      .map((item: any) => {
-        const name = item.name || item.function?.name || item.tool_name || item.tool;
-        if (!name || typeof name !== 'string') return null;
-        return {
-          id: item.id || item.tool_call_id || `call_${crypto.randomUUID()}`,
-          name,
-          arguments: parseToolArguments(item.arguments || item.function?.arguments || item.args || item.parameters || item.input || {}),
-        };
-      })
-      .filter((item: any): item is { id: string; name: string; arguments: Record<string, unknown> } => item !== null);
-  } catch {
-    return [];
-  }
-}
+export { getIncrementalDelta } from './sse-parser.js';
+export type { DeltaResult } from './sse-parser.js';
 
 export async function chatCompletions(c: Context) {
   try {
     const body: OpenAIRequest = await c.req.json();
     const isStream = body.stream ?? false;
     
-    // Extract the prompt
     let prompt = '';
     const messages = body.messages || [];
     let systemPrompt = '';
@@ -354,7 +35,6 @@ export async function chatCompletions(c: Context) {
       const msg = messages[i];
       let contentStr = '';
       if (Array.isArray(msg.content)) {
-        // Single-pass: extract text and multimodal parts in one iteration
         const textParts: string[] = [];
         const multimodalParts: Array<{ type: string; text?: string; image_url?: { url: string }; video_url?: { url: string }; audio_url?: { url: string }; file_url?: { url: string } }> = [];
         
@@ -409,7 +89,6 @@ export async function chatCompletions(c: Context) {
       } else if (msg.role === 'tool' || msg.role === 'function') {
         let toolName = msg.name;
         if (!toolName && msg.tool_call_id) {
-          // Look up tool name in history by tool_call_id
           for (let j = i - 1; j >= 0; j--) {
             const prevMsg = messages[j];
             if (prevMsg.role === 'assistant' && prevMsg.tool_calls) {
@@ -425,10 +104,10 @@ export async function chatCompletions(c: Context) {
       }
     }
 
-    // Inject tools instructions
     const bodyAny = body as any;
-    if (bodyAny.tools && Array.isArray(bodyAny.tools) && bodyAny.tools.length > 0) {
-      // Better formatting for tools
+    const hasTools = Array.isArray(bodyAny.tools) && bodyAny.tools.length > 0;
+    const toolChoiceMode = getToolChoiceMode(bodyAny.tool_choice);
+    if (hasTools && toolChoiceMode !== 'none') {
       const formattedTools = bodyAny.tools.map((t: any) => {
         if (t.type === 'function') {
           return {
@@ -452,9 +131,8 @@ export async function chatCompletions(c: Context) {
     const modelId = body.model.replace('-no-thinking', '');
     const modelContextWindow = getModelContextWindow(modelId)
     const estimatedTokens = estimateTokenCount(systemPrompt + prompt, modelId);
-    const hasTools = Array.isArray(bodyAny.tools) && bodyAny.tools.length > 0;
     const forcedToolName = getForcedToolName(bodyAny.tool_choice);
-    const parallelToolCalls = bodyAny.parallel_tool_calls !== false;
+    const parallelToolCalls = bodyAny.parallel_tool_calls !== false && toolChoiceMode !== 'forced';
     const toolContextText = `${systemPrompt}\n${prompt}`;
     const recentToolNames = hasTools ? getRecentToolNames(messages) : new Set<string>();
     const candidateTools = hasTools ? selectCandidateTools(bodyAny.tools, toolContextText, forcedToolName, recentToolNames) : [];
@@ -468,7 +146,11 @@ export async function chatCompletions(c: Context) {
       finalPrompt = systemPrompt ? `${systemPrompt}\n${prompt}` : prompt;
     }
 
-    if (hasTools) {
+    if (hasTools && toolChoiceMode === 'none') {
+      finalPrompt += '\n\n[TOOL USE DISABLED]\nDo not call tools in this response. Answer directly using available context.';
+    }
+
+    if (hasTools && toolChoiceMode !== 'none') {
       const compactManifest = buildCompactToolManifest(candidateTools, forcedToolName);
       const toolContract = buildToolCallContract(candidateTools, forcedToolName, parallelToolCalls);
       finalPrompt += `\n\n${toolContract}`;
@@ -476,12 +158,7 @@ export async function chatCompletions(c: Context) {
     }
 
     const isThinkingModel = !body.model.includes('no-thinking');
-    
-    // A session is new if it doesn't have any assistant messages yet.
-    // This handles cases where the first request has [System, User] messages.
-    const isNewSession = !messages.some(m => m.role === 'assistant');
 
-    // Account selection with fallback on rate-limit/failure
     const isGuestModeOnly = process.env.QWEN_GUEST_MODE_ONLY?.toLowerCase() === 'true';
     let stream: ReadableStream | undefined;
     let uiSessionId = '';
@@ -517,6 +194,14 @@ export async function chatCompletions(c: Context) {
       let account = getNextAccount();
       const triedAccountIds = new Set<string>();
 
+      if (!account) {
+        const inUse = getInUseAccounts();
+        const message = inUse.length > 0
+          ? `All configured account lanes are busy: ${inUse.join(', ')}`
+          : 'No available account lanes';
+        throw new RetryableQwenStreamError(message, 1000);
+      }
+
       while (account) {
         const accountId = account.id;
         const accountEmail = account.email;
@@ -535,67 +220,74 @@ export async function chatCompletions(c: Context) {
         }
 
         console.log(`[Chat] Routing request to account: ${accountEmail} (${accountId})`);
+        markAccountInUse(accountId);
 
         let retries = 3;
         let retryDelay = 500;
         let success = false;
 
-        while (retries > 0) {
-          try {
-            const result = await createQwenStream(
-              finalPrompt,
-              isThinkingModel,
-              body.model,
-              null, // Always force new chat for concurrency isolation
-              accountId === 'global' ? undefined : accountId,
-              undefined,
-              pendingMultimodal.length > 0 ? pendingMultimodal : undefined
-            );
-            stream = result.stream;
-            uiSessionId = result.uiSessionId;
-            registerStream(completionId, {
-              abortController: result.controller,
-              accountId: result.accountId,
-              uiSessionId: result.uiSessionId,
-              targetResponseId: '',
-              headers: result.headers,
-            });
-            success = true;
-            break;
-          } catch (err: any) {
-            retries--;
-
-            if (err.upstreamCode === 'RateLimited' || err.upstreamStatus === 429) {
-              const hourHint = err.message?.match(/Wait about (\d+) hour/);
-              const hours = hourHint ? parseInt(hourHint[1]) : 24;
-              const cooldownMs = hours * 60 * 60 * 1000;
-              markAccountRateLimited(accountId, cooldownMs, 'RateLimited');
-              console.warn(`[Chat] Account ${accountEmail} (${accountId}) rate-limited. Entering cooldown for ${hours} hours.`);
-              lastError = err;
+        try {
+          while (retries > 0) {
+            try {
+              const result = await createQwenStream(
+                finalPrompt,
+                isThinkingModel,
+                body.model,
+                null,
+                accountId === 'global' ? undefined : accountId,
+                undefined,
+                pendingMultimodal.length > 0 ? pendingMultimodal : undefined
+              );
+              stream = result.stream;
+              uiSessionId = result.uiSessionId;
+              registerStream(completionId, {
+                abortController: result.controller,
+                accountId: result.accountId,
+                uiSessionId: result.uiSessionId,
+                targetResponseId: '',
+                headers: result.headers,
+              });
+              success = true;
               break;
-            }
+            } catch (err: any) {
+              retries--;
 
-            if (retries === 0) {
-              if (err.upstreamStatus && err.upstreamStatus >= 500) {
-                markAccountRateLimited(accountId, undefined, 'ServerError');
-                console.warn(`[Chat] Account ${accountEmail} (${accountId}) returned server error. Marked for cooldown.`);
+              if (err.upstreamCode === 'RateLimited' || err.upstreamStatus === 429) {
+                const hourHint = err.message?.match(/Wait about (\d+) hour/);
+                const hours = hourHint ? parseInt(hourHint[1]) : 24;
+                const cooldownMs = hours * 60 * 60 * 1000;
+                markAccountRateLimited(accountId, cooldownMs, 'RateLimited');
+                console.warn(`[Chat] Account ${accountEmail} (${accountId}) rate-limited. Entering cooldown for ${hours} hours.`);
+                lastError = err;
+                break;
               }
-              lastError = err;
-              break;
-            }
 
-            let useDelay = retryDelay;
-            if (err instanceof RetryableQwenStreamError && err.retryAfterMs !== undefined) {
-              useDelay = err.retryAfterMs;
+              if (retries === 0) {
+                if (err.upstreamStatus && err.upstreamStatus >= 500) {
+                  markAccountRateLimited(accountId, undefined, 'ServerError');
+                  console.warn(`[Chat] Account ${accountEmail} (${accountId}) returned server error. Marked for cooldown.`);
+                }
+                lastError = err;
+                break;
+              }
+
+              let useDelay = retryDelay;
+              if (err instanceof RetryableQwenStreamError && err.retryAfterMs !== undefined) {
+                useDelay = err.retryAfterMs;
+              }
+              const isRetryable = err instanceof RetryableQwenStreamError || err.message?.includes('in progress') || err.message?.includes('Bad_Request');
+              if (!isRetryable) {
+                lastError = err;
+                break;
+              }
+              console.warn(`[Chat] Qwen request failed for ${accountEmail}, retrying in ${useDelay}ms... (${retries} left)`);
+              await new Promise(r => setTimeout(r, useDelay));
+              retryDelay = Math.min(retryDelay * 2, 5000);
             }
-            const isRetryable = err instanceof RetryableQwenStreamError || err.message?.includes('in progress') || err.message?.includes('Bad_Request');
-            if (!isRetryable) {
-              lastError = err;
-              break;
-            }
-            console.warn(`[Chat] Qwen request failed for ${accountEmail}, retrying in ${useDelay}ms... (${retries} left)`);
-            await new Promise(r => setTimeout(r, useDelay));
-            retryDelay = Math.min(retryDelay * 2, 5000);
+          }
+        } finally {
+          if (!success) {
+            releaseAccountInUse(accountId);
           }
         }
 
@@ -643,454 +335,18 @@ export async function chatCompletions(c: Context) {
     }
 
     if (!isStream) {
-      const reader = stream!.getReader();
-      const decoder = new TextDecoder();
-
-      const toolCallsOut: any[] = [];
-      let buffer = '';
-
-      const qwenParser = new QwenStreamParser(uiSessionId, {
-        tools: hasTools ? bodyAny.tools : [],
-        onThinking: (content: string) => {
-          // Accumulate reasoning content (handled via parser state)
-        },
-        onToolCall: (tc) => {
-          toolCallsOut.push({
-            id: tc.id,
-            type: 'function',
-            function: {
-              name: tc.name,
-              arguments: JSON.stringify(tc.arguments)
-            }
-          });
-        },
-      });
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith('data: ')) continue;
-
-          const dataStr = trimmed.slice(6);
-          if (dataStr === '[DONE]') continue;
-
-          qwenParser.parseLine(dataStr);
-        }
-      }
-
-      const upstreamError = parseQwenErrorPayload(buffer);
-      if (upstreamError) {
-        removeStream(completionId);
-        return c.json({ error: { message: upstreamError.message } }, upstreamError.status as any);
-      }
-
-      const { text: remainingText, toolCalls: remainingToolCalls } = qwenParser.flush();
-      const parserState = qwenParser.state;
-      let finalContent = parserState.lastFullContent;
-      if (remainingText) {
-        finalContent += remainingText;
-      }
-      for (const tc of remainingToolCalls) {
-        toolCallsOut.push({
-          id: tc.id,
-          type: 'function',
-          function: {
-            name: tc.name,
-            arguments: JSON.stringify(tc.arguments)
-          }
-        });
-      }
-
-      if (hasTools && toolCallsOut.length === 0) {
-        for (const tc of parseUnwrappedToolCalls(finalContent)) {
-          toolCallsOut.push({
-            id: tc.id,
-            type: 'function',
-            function: {
-              name: tc.name,
-              arguments: JSON.stringify(tc.arguments)
-            }
-          });
-        }
-        if (toolCallsOut.length > 0) finalContent = '';
-      }
-
-      const usage = {
-        prompt_tokens: parserState.promptTokens,
-        completion_tokens: parserState.completionTokens,
-        total_tokens: parserState.promptTokens + parserState.completionTokens,
-        prompt_tokens_details: { cached_tokens: 0 }
-      };
-      const message: any = { role: 'assistant', content: toolCallsOut.length ? null : finalContent };
-      if (parserState.reasoningBuffer) message.reasoning_content = parserState.reasoningBuffer;
-      if (toolCallsOut.length) toolCallsOut.forEach((tc, idx) => tc.index = idx);
-      if (toolCallsOut.length) message.tool_calls = toolCallsOut;
-
-      removeStream(completionId);
-      return c.json({
-        id: completionId,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model: body.model,
-        choices: [{
-          index: 0,
-          message,
-          logprobs: null,
-          finish_reason: toolCallsOut.length ? 'tool_calls' : 'stop'
-        }],
-        usage
-      });
+      return handleNonStreamingResponse(c, stream!, completionId, body.model, uiSessionId, hasTools && toolChoiceMode !== 'none', bodyAny.tools || []);
     }
 
-    // Disable Nagle's algorithm to transmit small chunks immediately without buffering delay
-    const socket = (c.env as any)?.incoming?.socket || (c.req.raw as any).socket;
-    if (socket && typeof socket.setNoDelay === 'function') {
-      socket.setNoDelay(true);
-    }
-
-    c.header('Content-Type', 'text/event-stream');
-    c.header('Cache-Control', 'no-cache, no-transform');
-    c.header('Connection', 'keep-alive');
-    c.header('X-Accel-Buffering', 'no');
-
-    return honoStream(c, async (streamWriter: any) => {
-      let heartbeatInterval: any;
-      try {
-        // Send heartbeat to prevent Cloudflare 524 timeout
-        await streamWriter.write(': heartbeat\n\n');
-
-        // Set up a periodic heartbeat to keep the connection alive during long thinking phases
-        heartbeatInterval = setInterval(async () => {
-          try {
-            await streamWriter.write(': keep-alive\n\n');
-          } catch (e) {
-            clearInterval(heartbeatInterval);
-          }
-        }, 15000); // Every 15 seconds
-
-        // Optimized: fire-and-forget write (Hono's streamWriter has internal buffering)
-        const writeEvent = (data: any) => {
-          streamWriter.write(`data: ${JSON.stringify(data)}\n\n`);
-        };
-
-        const makeChoice = (delta: any, finishReason: string | null = null) => ({
-          index: 0,
-          delta,
-          logprobs: null,
-          finish_reason: finishReason
-        });
-
-        const createdTimestamp = Math.floor(Date.now() / 1000);
-
-        const fastWriteContent = (content: string) => {
-          const escaped = JSON.stringify(content).slice(1, -1);
-          streamWriter.write(`data: {"id":"${completionId}","object":"chat.completion.chunk","created":${createdTimestamp},"model":"${body.model}","choices":[{"index":0,"delta":{"content":"${escaped}"},"logprobs":null,"finish_reason":null}]}\n\n`);
-        };
-
-        const fastWriteReasoning = (content: string) => {
-          const escaped = JSON.stringify(content).slice(1, -1);
-          streamWriter.write(`data: {"id":"${completionId}","object":"chat.completion.chunk","created":${createdTimestamp},"model":"${body.model}","choices":[{"index":0,"delta":{"reasoning_content":"${escaped}"},"logprobs":null,"finish_reason":null}]}\n\n`);
-        };
-
-        writeEvent({
-          id: completionId,
-          object: 'chat.completion.chunk',
-          created: createdTimestamp,
-          model: body.model,
-          choices: [makeChoice({ role: 'assistant', content: '' })]
-        });
-
-        const reader = stream.getReader();
-        const decoder = new TextDecoder();
-
-        let reasoningBuffer = '';
-        let lastFullContent = '';
-        let contentLength = 0;
-        let contentSuffix = '';
-        let targetResponseId: string | null = null;
-        let targetResponseIdSet = false;
-        let currentThoughtIndex = 0;
-        const toolParser = hasTools ? new StreamingToolParser(bodyAny.tools) : null;
-
-        let buffer = '';
-        let bufferOffset = 0;
-        let completionTokens = 0;
-        let promptTokens = Math.ceil(finalPrompt.length / 3.5);
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-
-          while (bufferOffset < buffer.length) {
-            const newlineIdx = buffer.indexOf('\n', bufferOffset);
-            if (newlineIdx === -1) break;
-            
-            const line = buffer.slice(bufferOffset, newlineIdx);
-            bufferOffset = newlineIdx + 1;
-
-            const trimmed = line.trim();
-            if (!trimmed || !trimmed.startsWith('data: ')) continue;
-
-            const dataStr = trimmed.slice(6);
-             if (dataStr === '[DONE]') {
-               streamWriter.write('data: [DONE]\n\n');
-               continue;
-             }
-
-            try {
-              const chunk = JSON.parse(dataStr);
-
-              // Extract response_id for session tracking and target filtering
-              if (chunk['response.created'] && chunk['response.created'].response_id) {
-                if (!targetResponseId) {
-                  targetResponseId = chunk['response.created'].response_id;
-                  targetResponseIdSet = true;
-                }
-                updateSessionParent(uiSessionId, chunk['response.created'].response_id);
-              } else if (chunk.response_id && !targetResponseIdSet) {
-                targetResponseId = chunk.response_id;
-                targetResponseIdSet = true;
-                updateSessionParent(uiSessionId, chunk.response_id);
-              }
-
-              if (chunk.usage) {
-                if (chunk.usage.output_tokens) completionTokens = chunk.usage.output_tokens;
-                if (chunk.usage.input_tokens) promptTokens = chunk.usage.input_tokens;
-              }
-
-              let vStr = '';
-              let foundStr = false;
-              let isThinkingChunk = false;
-
-              if (chunk.choices && chunk.choices[0] && chunk.choices[0].delta &&
-                  (!targetResponseIdSet || chunk.response_id === targetResponseId)) {
-                const delta = chunk.choices[0].delta;
-
-                if (delta.phase === 'thinking_summary') {
-                  isThinkingChunk = true;
-                  if (delta.extra && delta.extra.summary_thought && delta.extra.summary_thought.content) {
-                    const thoughts = delta.extra.summary_thought.content;
-                    if (thoughts.length > currentThoughtIndex) {
-                      vStr = thoughts.slice(currentThoughtIndex).join('\n');
-                      currentThoughtIndex = thoughts.length;
-                      foundStr = true;
-                    }
-                  }
-                } else if (delta.phase === 'answer' || (delta.phase === undefined && delta.content !== undefined)) {
-                  isThinkingChunk = false;
-                  if (delta.content !== undefined) {
-                    const newContent = delta.content || '';
-                    const result = getIncrementalDelta(lastFullContent, newContent, contentLength, contentSuffix);
-                    vStr = result.delta;
-                    if (vStr) {
-                      lastFullContent = result.matchedContent;
-                      contentLength = result.contentLength;
-                      contentSuffix = result.contentSuffix;
-                      foundStr = true;
-                    }
-                  }
-                }
-              }
-
-              if (foundStr && vStr !== '') {
-        if (vStr === 'FINISHED') continue;
-
-                if (isThinkingChunk) {
-                  reasoningBuffer += vStr;
-                  fastWriteReasoning(vStr);
-                } else {
-                  if (hasTools && toolParser) {
-                    const { text, toolCalls } = toolParser.feed(vStr);
-                    if (text) {
-                      if (hasTools && toolParser && looksLikeUnwrappedToolCall(text)) {
-                        const unwrappedToolCalls = parseUnwrappedToolCalls(text);
-                        const baseIndex = toolParser.getEmittedToolCallCount();
-                        for (let idx = 0; idx < unwrappedToolCalls.length; idx++) {
-                          const tc = unwrappedToolCalls[idx];
-                          streamWriter.write(`data: ${JSON.stringify({
-                            id: completionId,
-                            object: 'chat.completion.chunk',
-                            created: createdTimestamp,
-                            model: body.model,
-                            choices: [makeChoice({
-                              tool_calls: [{
-                                index: baseIndex + idx,
-                                id: tc.id,
-                                type: 'function',
-                                function: {
-                                  name: tc.name,
-                                  arguments: JSON.stringify(tc.arguments)
-                                }
-                              }]
-                            })]
-                          })}\n\n`);
-                        }
-                      } else {
-                        fastWriteContent(text);
-                      }
-                    }
-                    for (const tc of toolCalls) {
-                      streamWriter.write(`data: ${JSON.stringify({
-                        id: completionId,
-                        object: 'chat.completion.chunk',
-                        created: createdTimestamp,
-                        model: body.model,
-                        choices: [makeChoice({
-                          tool_calls: [{
-                            index: toolParser.getEmittedToolCallCount() - toolCalls.length + toolCalls.indexOf(tc),
-                            id: tc.id,
-                            type: 'function',
-                            function: {
-                              name: tc.name,
-                              arguments: JSON.stringify(tc.arguments)
-                            }
-                          }]
-                        })]
-                      })}\n\n`);
-                    }
-                  } else {
-                    if (vStr) {
-                      fastWriteContent(vStr);
-                    }
-                  }
-                }
-              }
-            } catch (e) {
-              if (dataStr.length > 10) {
-                console.warn(`[Chat] SSE parse error for chunk (${dataStr.length} chars):`, (e as Error).message);
-              }
-            }
-          }
-
-          if (bufferOffset > 0) {
-            buffer = buffer.slice(bufferOffset);
-            bufferOffset = 0;
-          }
-
-        }
-
-        const upstreamError = parseQwenErrorPayload(buffer);
-        if (upstreamError) {
-          writeEvent({
-            id: completionId,
-            object: 'chat.completion.chunk',
-            created: createdTimestamp,
-            model: body.model,
-            choices: [makeChoice({ content: upstreamError.message })]
-          });
-          writeEvent({
-            id: completionId,
-            object: 'chat.completion.chunk',
-            created: createdTimestamp,
-            model: body.model,
-            choices: [makeChoice({}, 'stop')]
-          });
-          streamWriter.write('data: [DONE]\n\n');
-          return;
-        }
-
-        if (toolParser) {
-          const flushResult = toolParser.flush();
-
-          if (flushResult.text) {
-            if (hasTools && toolParser && looksLikeUnwrappedToolCall(flushResult.text)) {
-              const unwrappedToolCalls = parseUnwrappedToolCalls(flushResult.text);
-              const baseIndex = toolParser.getEmittedToolCallCount();
-              for (let idx = 0; idx < unwrappedToolCalls.length; idx++) {
-                const tc = unwrappedToolCalls[idx];
-                writeEvent({
-                  id: completionId,
-                  object: 'chat.completion.chunk',
-                  created: createdTimestamp,
-                  model: body.model,
-                  choices: [makeChoice({
-                    tool_calls: [{
-                      index: baseIndex + idx,
-                      id: tc.id,
-                      type: 'function',
-                      function: {
-                        name: tc.name,
-                        arguments: JSON.stringify(tc.arguments)
-                      }
-                    }]
-                  })]
-                });
-              }
-            } else {
-              writeEvent({
-                id: completionId,
-                object: 'chat.completion.chunk',
-                created: createdTimestamp,
-                model: body.model,
-                choices: [makeChoice({ content: flushResult.text })]
-              });
-            }
-          }
-          for (const tc of flushResult.toolCalls) {
-            const idx = toolParser.getEmittedToolCallCount() - flushResult.toolCalls.length + flushResult.toolCalls.indexOf(tc);
-            writeEvent({
-              id: completionId,
-              object: 'chat.completion.chunk',
-              created: createdTimestamp,
-              model: body.model,
-              choices: [makeChoice({
-                tool_calls: [{
-                  index: idx,
-                  id: tc.id,
-                  type: 'function',
-                  function: {
-                    name: tc.name,
-                    arguments: JSON.stringify(tc.arguments)
-                  }
-                }]
-              })]
-            });
-          }
-        }
-
-        const usage = {
-          prompt_tokens: promptTokens,
-          completion_tokens: completionTokens,
-          total_tokens: promptTokens + completionTokens,
-          prompt_tokens_details: { cached_tokens: 0 }
-        };
-
-        const finalFinishReason = toolParser && toolParser.getEmittedToolCallCount() > 0 ? 'tool_calls' : 'stop';
-
-        writeEvent({
-          id: completionId,
-          object: 'chat.completion.chunk',
-          created: createdTimestamp,
-          model: body.model,
-          choices: [makeChoice({}, finalFinishReason)],
-          ...(body.stream_options?.include_usage ? {} : { usage })
-        });
-
-        if (body.stream_options?.include_usage) {
-          writeEvent({
-            id: completionId,
-            object: 'chat.completion.chunk',
-            created: createdTimestamp,
-            model: body.model,
-            choices: [],
-            usage
-          });
-        }
-        streamWriter.write('data: [DONE]\n\n');
-
-      } finally {
-        clearInterval(heartbeatInterval);
-        removeStream(completionId);
-      }
+    return handleStreamingResponse(c, {
+      stream: stream!,
+      completionId,
+      model: body.model,
+      uiSessionId,
+      hasTools: hasTools && toolChoiceMode !== 'none',
+      tools: bodyAny.tools || [],
+      finalPrompt,
+      streamOptions: body.stream_options
     });
   } catch (err: any) {
     console.error('Error in chatCompletions:', err)

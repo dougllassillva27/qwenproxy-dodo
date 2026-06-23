@@ -181,22 +181,18 @@ export function robustParseJSON(str: string): any {
   let sanitized = str.trim();
   sanitized = sanitized.replace(/^```json\s*/, '').replace(/```$/, '').trim();
 
-  // Corrige chaves com aspas desbalanceadas nas transições de chaves (ex: chave": ou "chave:)
-  sanitized = sanitized.replace(/([{,]\s*)([a-zA-Z0-9_]+)":\s*/g, '$1"$2":');
-  sanitized = sanitized.replace(/([{,]\s*)"([a-zA-Z0-9_]+):\s*/g, '$1"$2":');
-
   const firstBrace = sanitized.indexOf('{');
   if (firstBrace === -1) return null;
 
-  let jsonPart = sanitized.substring(firstBrace);
-  try { return JSON.parse(jsonPart); } catch (e) { /* continue */ }
+  const jsonPart = sanitized.substring(firstBrace);
+  try { return JSON.parse(jsonPart); } catch { /* continue */ }
 
   let currentJson = quoteUnquotedKeys(jsonPart);
   currentJson = quoteUnquotedStringValues(currentJson);
   currentJson = currentJson.replace(/([{,]\s*)"([a-zA-Z0-9_]+)"\s*:\s*"\2"\s*:/g, '$1"$2":');
   currentJson = currentJson.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:\s*\2\s*:/g, '$1$2:');
 
-  try { return JSON.parse(currentJson); } catch (e) { /* continue */ }
+  try { return JSON.parse(currentJson); } catch { /* continue */ }
 
   let cleaned = currentJson.trim();
   while (cleaned.length > 0 && !/[}\]"0-9a-z]/i.test(cleaned[cleaned.length - 1])) {
@@ -227,7 +223,7 @@ export function robustParseJSON(str: string): any {
     tempJson = closeBraces(fixedJson, openBraces, openBrackets, inString);
   }
 
-  try { return JSON.parse(tempJson); } catch (e) {
+  try { return JSON.parse(tempJson); } catch {
     let aggressive = fixedJson.trim();
     aggressive = aggressive.replace(/,\s*([}\]])/g, '$1');
     const { result: aggFixed, openBraces: ob, openBrackets: bk, inString: aggInString } = sanitizeAndBalance(aggressive);

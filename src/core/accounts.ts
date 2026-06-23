@@ -1,6 +1,7 @@
 import crypto from 'crypto'
 import { getDatabase } from './database.js'
 import { config } from './config.js'
+import { encrypt, decrypt } from './crypto-utils.js'
 
 export interface QwenAccount {
   id: string
@@ -18,7 +19,11 @@ function getCachedAccounts(): QwenAccount[] {
   const now = Date.now()
   if (!accountsCache || (now - accountsCacheTimestamp) > ACCOUNTS_CACHE_TTL) {
     const db = getDatabase()
-    accountsCache = db.prepare('SELECT id, email, password, cooldown_until, cooldown_reason FROM accounts ORDER BY created_at ASC').all() as QwenAccount[]
+    const rows = db.prepare('SELECT id, email, password, cooldown_until, cooldown_reason FROM accounts ORDER BY created_at ASC').all() as QwenAccount[]
+    accountsCache = rows.map(row => ({
+      ...row,
+      password: decrypt(row.password),
+    }))
     accountsCacheTimestamp = now
   }
   return accountsCache
@@ -30,7 +35,7 @@ export function invalidateAccountsCache(): void {
 }
 
 export function loadAccounts(): QwenAccount[] {
-  return getCachedAccounts()
+  return getCachedAccounts().map(a => ({ ...a, password: '***' }))
 }
 
 export function addAccount(email: string, password: string, id?: string): QwenAccount {
@@ -44,6 +49,8 @@ export function addAccount(email: string, password: string, id?: string): QwenAc
     throw new Error(`Account with email ${email} already exists`)
   }
 
+  const encryptedPassword = encrypt(password)
+  
   const newAccount: QwenAccount = {
     id: id || crypto.randomUUID(),
     email: email.trim(),
@@ -53,7 +60,7 @@ export function addAccount(email: string, password: string, id?: string): QwenAc
   db.prepare('INSERT INTO accounts (id, email, password) VALUES (?, ?, ?)').run(
     newAccount.id,
     newAccount.email,
-    newAccount.password,
+    encryptedPassword,
   )
 
   invalidateAccountsCache()
@@ -70,7 +77,7 @@ export function removeAccount(id: string): boolean {
 }
 
 export function listAccounts(): QwenAccount[] {
-  return getCachedAccounts().map(a => ({ id: a.id, email: a.email, password: '***' }))
+  return loadAccounts()
 }
 
 export function getAccountCredentials(id: string): QwenAccount | undefined {
