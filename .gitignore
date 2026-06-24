@@ -16,6 +16,7 @@ data/
 *.db-shm
 accounts.json
 accounts.json.bak
+accounts.sqlite
 
 # Browser profiles (session data)
 qwen_profiles/
