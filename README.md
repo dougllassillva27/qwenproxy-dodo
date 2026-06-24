@@ -270,6 +270,58 @@ qwenproxy/
 
 ---
 
+## Blindagens Dodo (Customizações de Produção)
+
+Este fork inclui customizações exclusivas ("Blindagens Dodo") aplicadas sobre o upstream para garantir estabilidade, performance e resiliência em produção. Qualquer atualização do upstream deve preservar estas modificações.
+
+### Anti-Bot e Captcha (TMD)
+
+- **Solver de Captcha Baxia Nativo** (`src/services/captcha-solver.ts`) - Pipeline híbrido em 3 etapas: (1) heurística geométrica rápida do upstream, (2) fallback DeepSeek Vision via microserviço local `captchaResolve` na porta 50006, (3) alerta físico (beep + MessageBox Windows) após 3 falhas. Simulação humanizada de arraste com 15 passos progressivos e tremores verticais.
+- **Higienização de URL de TMD** (`src/services/stream-creator.ts`) - Função `cleanPunishUrl` que limpa a URL do TMD (porta redundante `:443`, barras duplas). Auto-persistência de cookies `x5sec` via `saveStorageState` após resolução.
+- **Preservação de Bypass WAF** (`src/services/browser-manager.ts`) - `fs.rmSync` comentado em `resetBrowserProfile` para preservar cookies e `_state.json` de bypasses manuais.
+- **Liberação de Imagens de Captcha** - Filtro de resource blocking adaptado para permitir imagens contendo `captcha`, `alicdn`, `aliyun` ou `_____tmd_____`, garantindo renderização correta dos puzzles.
+- **Enter Fallback** (`src/services/header-interceptor.ts`) - `sleep(1500)` + envio incondicional de `Enter` via teclado como reforço pós-clique, evitando falhas silenciosas do SPA do Qwen.
+
+### Concorrência e Rate Limit
+
+- **Warm Pool (Piscina de Chats Aquecidos)** (`src/services/warm-pool.ts`) - Fila em background que mantém chats da Qwen pré-criados e prontos. Delay humanizado de 2.5s a 5.5s entre criações para evadir WAF. Zera latência de criação de chat no momento da mensagem.
+- **Rate Tracker Global Dinâmico** (`src/core/rate-tracker.ts`) - Intercepta erro `RateLimited` da Qwen e aplica cooldown temporário na conta, roteando tráfego para próxima conta disponível ou modo Convidado (GUEST).
+- **Prevenção de Tarpit** (`src/services/warm-pool.ts`) - Delay aleatório de 2.5s a 5.5s antes de qualquer request de criação de chat no `refillPoolForAccount`, humanizando a rotina e evadindo o WAF.
+
+### Otimizações de Memória e Performance
+
+- **Motor Playwright Singleton** (`src/services/browser-manager.ts`) - Arquitetura upstream com navegador único + contextos isolados (`browser.newContext`). Estado salvo em `_state.json`. Redução de ~300MB/conta para ~50MB.
+- **Flags Agressivas de Chromium** - `--disable-gpu`, `--js-flags=--max-old-space-size=256`, `--disable-software-rasterizer`, janela compacta `500,400`, bloqueio de mídias pesadas via `route.abort()`.
+- **Blindagem de Stream** (`src/routes/stream-handler.ts`) - Condição `delta.phase === 'answer' || (delta.phase === undefined && delta.content !== undefined)` para resgatar blocos de texto sem declaração de fase.
+
+### Estabilidade de Streaming
+
+- **Sliding Window Maximum Overlap** (`src/routes/sse-parser.ts`) - Algoritmo de Maximum Overlap com limiar de 32 caracteres (upstream usa 4) para eliminar duplicação de palavras causada pelo sliding window da Qwen.
+- **Auto-Recuperador de JSON Quebrado** (`src/utils/json.ts`, `src/tools/parser.ts`) - Regex universais para consertar chaves sem aspas, omissão de `arguments`, e extração brute-force de tool calls malformados. Blindagem anti-travamento com flatten de argumentos duplamente aninhados.
+- **Parser XML String-Aware** (`src/tools/parser.ts`) - Detecção de `</tool_call>` caractere por caractere observando strings JSON, suporte a tags truncadas e metadados acoplados (`</tool_call<environment_details>`).
+
+### Timeout e Rede
+
+- **Undici 2h Timeout** (`src/index.ts`) - `setGlobalDispatcher(new Agent({ headersTimeout: 7200000, bodyTimeout: 7200000 }))` para processar contextos massivos sem timeout de 5 minutos.
+- **Anti-Tarpit no Playwright** (`src/services/browser-manager.ts`) - `timeout: 15000` em todos os `page.goto` de login e `AbortController` de 15s no fetch da API de login via browser.
+- **Resumidor de Payload Anti-DDoS** (`src/services/payload-summarizer.ts`) - Sumarização sequencial segmentada por caracteres (60k chars) para evitar ban por requisições simultâneas.
+
+### Compatibilidade Anthropic
+
+- **Injeção de Rota Anthropic** (`src/api/server.ts`) - `app.route('', anthropicApp)` para garantir compatibilidade com Claude Code.
+- **Estimativa CJK-Aware de Tokens** (`src/utils/token-estimator.ts`) - Heurística inteligente: ~4 chars/token para texto não-CJK, ~1 char/token para CJK.
+- **Mapeamento Claude 3/4** (`src/routes/anthropic/translate.ts`) - Suporte nativo a `claude-opus-4-8`, `claude-sonnet-4`, `claude-haiku-4` direcionados para Qwen.
+- **Blocos de Pensamento Translúcidos** - Restauração de `reasoning_content` da Qwen para eventos `thinking` e `thinking_delta` da Anthropic.
+- **Abort Controller de Streaming** (`src/routes/anthropic/index.ts`) - Listener `c.req.raw.signal?.addEventListener('abort')` para matar conexões fantasma ao fechar a IDE.
+
+### Observabilidade e Logs
+
+- **Logs com Timestamp Customizado** (`src/index.ts`) - Override de `console.log/warn/error` com formato `[DD/MM/YYYY HH:MM]`.
+- **Identificação de E-mail nos Alertas TMD** (`src/services/stream-creator.ts`) - Mapeamento de UUIDs para e-mail via `getAccountCredentials(accountId)?.email` nos alertas de bloqueio.
+- **Alerta Físico de Captcha** - Função `triggerWindowsAlert(accountName)` com beep sonoro (`\x07`) e MessageBox nativo do Windows via PowerShell.
+
+---
+
 ## Disclaimer
 
 > Este projeto é fornecido estritamente para fins educacionais e de pesquisa.

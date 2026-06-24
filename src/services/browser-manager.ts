@@ -596,6 +596,18 @@ export async function initPlaywrightForAccount(account: QwenAccount, _headless =
   accountContexts.set(account.id, acctContext);
   accountPages.set(account.id, acctPage);
 
+  // Minimiza janela via CDP (Chrome DevTools Protocol)
+  try {
+    const client = await acctPage.context().newCDPSession(acctPage);
+    const { windowId } = await client.send('Browser.getWindowForTarget');
+    await client.send('Browser.setWindowBounds', {
+      windowId,
+      bounds: { windowState: 'minimized' }
+    });
+  } catch (err) {
+    // Ignora erro se CDP não suportado
+  }
+
   const hasAuth = await hasValidAuthCookie(acctPage);
 
   if (!hasAuth && account.email && account.password) {
