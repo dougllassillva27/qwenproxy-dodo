@@ -12,15 +12,18 @@ Proxy API local compatível com OpenAI que roteia requisições para os modelos 
 
 ## Features
 
-- **OpenAI API Compatible** — Interface compatível com `/v1/chat/completions` e `/v1/models`.
+- **OpenAI API Compatible** — Interface compatível com `/v1/chat/completions`, `/v1/models` e `/v1/upload`.
 - **Multi-Account** — Gerencie múltiplas contas Qwen com rotação round-robin e cooldown automático.
+- **Guest Mode** — Modo convidado sem necessidade de login, usando a API pública do Qwen.
 - **SQLite Storage** — Contas salvas em banco de dados SQLite (WAL mode) para performance e confiabilidade.
 - **Reasoning Support** — Suporte completo ao modo de pensamento (thinking) dos modelos Qwen.
+- **Multimodal Upload** — Envio de imagens, vídeos, áudios e documentos via `/v1/upload` com integração ao OSS do Qwen.
 - **Tool Execution** — Sistema de execução de ferramentas locais integrado ao fluxo do chat.
 - **Session Persistence** — Perfil de navegador persistente por conta em `qwen_profiles/`.
 - **Auto-Login** — Login automático via credenciais com recuperação de sessão.
 - **Browser Selection** — Escolha entre Chromium, Chrome, Firefox, Edge ou WebKit.
 - **Monitoring** — Health check, métricas Prometheus e watchdog integrados.
+- **CLI Binary** — Instale globalmente via npm e use o comando `qwenproxy` diretamente.
 - **Docker Ready** — Deploy para VPS com Docker, volumes persistentes e graceful shutdown.
 
 ---
@@ -62,7 +65,15 @@ graph TD
 
 ## Instalação
 
-### Via npm
+### Via npm (Global)
+
+```bash
+npm install -g @pedrofariasx/qwenproxy
+npx playwright install
+qwenproxy
+```
+
+### Via npm (Local)
 
 ```bash
 git clone https://github.com/pedrofariasx/qwenproxy.git
@@ -87,6 +98,9 @@ Crie o arquivo `.env` na raiz do projeto (veja `.env.example`):
 # Porta do servidor (default: 3000)
 PORT=3000
 
+# Host do servidor (default: 0.0.0.0)
+HOST=0.0.0.0
+
 # Chave de API para proteger os endpoints (opcional)
 API_KEY=sua-chave-secreta-aqui
 
@@ -94,8 +108,22 @@ API_KEY=sua-chave-secreta-aqui
 QWEN_EMAIL=seu-email@exemplo.com
 QWEN_PASSWORD=sua-senha-aqui
 
-# Navegador (chromium, firefox, chrome, edge)
+# Modo convidado - sem login, usa API pública (default: false)
+QWEN_GUEST_MODE_ONLY=false
+
+# Navegador (chromium, firefox, chrome, edge, webkit)
 BROWSER=chromium
+
+# Executar navegador sem interface gráfica (default: true)
+HEADLESS=true
+
+# Timeouts (milissegundos)
+NAVIGATION_TIMEOUT=45000
+PAGE_TIMEOUT=30000
+HTTP_TIMEOUT=30000
+HEADERS_TIMEOUT=60000
+CHAT_TIMEOUT=120000
+STREAM_IDLE_TIMEOUT=180000
 ```
 
 ---
@@ -143,6 +171,7 @@ O servidor inicia em `http://localhost:3000` com as seguintes rotas:
 | `/v1/chat/completions/stop` | POST | Abortar uma geração ativa |
 | `/v1/models` | GET | Listar modelos disponíveis |
 | `/v1/models/:model` | GET | Informações de um modelo específico |
+| `/v1/upload` | POST | Upload de arquivos multimodais (imagens, vídeos, áudios, documentos) |
 | `/health` | GET | Health check com status do sistema |
 | `/metrics` | GET | Métricas no formato Prometheus |
 
@@ -197,17 +226,28 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data:/app/data               # Banco SQLite
-      - ./qwen_profiles:/app/qwen_profiles  # Sessões dos navegadores
+      - qwenproxy_data:/app/data
+      - qwenproxy_profiles:/app/qwen_profiles
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  qwenproxy_data:
+  qwenproxy_profiles:
 ```
 
 ### Volumes persistentes
 
 | Volume | Conteúdo |
 |--------|----------|
-| `./data` | Banco SQLite com as contas (`qwenproxy.db`) |
-| `./qwen_profiles` | Perfis de navegador por conta (cookies, sessões) |
+| `qwenproxy_data` | Banco SQLite com as contas (`qwenproxy.db`) |
+| `qwenproxy_profiles` | Perfis de navegador por conta (cookies, sessões) |
+
+O container ajusta automaticamente as permissões desses volumes no startup. Se usar bind mounts locais em vez dos volumes nomeados acima, garanta que os diretórios montados sejam graváveis pelo container.
 
 ---
 
@@ -215,8 +255,10 @@ services:
 
 ```
 qwenproxy/
+├── bin/
+│   └── qwenproxy.mjs            # Entry point do CLI binário
 ├── src/
-│   ├── index.ts                 # Entry point
+│   ├── index.ts                 # Entry point do servidor
 │   ├── login.ts                 # CLI de gerenciamento de contas
 │   ├── api/
 │   │   ├── models.ts            # Endpoints /v1/models
@@ -227,19 +269,30 @@ qwenproxy/
 │   │   ├── account-manager.ts   # Rotação round-robin + cooldowns
 │   │   ├── accounts.ts          # CRUD de contas (SQLite)
 │   │   ├── config.ts            # Configuração com Zod
+│   │   ├── crypto-utils.ts      # Criptografia de senhas em repouso
 │   │   ├── database.ts          # Conexão e migrations SQLite
 │   │   ├── logger.ts            # Logger estruturado
-│   │   ├── metrics.ts           # Coleta de métricas
+│   │   ├── metrics.ts           # Coleta de métricas Prometheus
 │   │   ├── model-registry.ts    # Registro de modelos e context windows
 │   │   ├── stream-registry.ts   # Tracking de streams ativos
 │   │   └── watchdog.ts          # Health monitoring
 │   ├── routes/
 │   │   ├── chat.ts              # Handler /v1/chat/completions
+│   │   ├── sse-parser.ts        # Parser incremental de SSE + delta
+│   │   ├── stream-handler.ts    # Orquestração de streaming SSE
+│   │   ├── tool-handler.ts      # Execução de tools locais
 │   │   └── upload.ts            # Handler /v1/upload (multimodal)
 │   ├── services/
-│   │   ├── playwright.ts        # Automação de navegador
-│   │   └── qwen.ts              # Integração com API do Qwen
-│   ├── tests/                   # Testes automatizados
+│   │   ├── browser-manager.ts   # Ciclo de vida de browsers/contexts
+│   │   ├── error-handler.ts     # Tipagem e retry de erros Qwen
+│   │   ├── header-interceptor.ts # Captura de cookies/headers via CDP
+│   │   ├── playwright.ts        # Fachada do serviço Playwright
+│   │   ├── qwen.ts              # Integração com API do Qwen
+│   │   ├── stealth.ts           # Script anti-detecção
+│   │   ├── stream-bridge.ts     # Ponte de stream browser → Node
+│   │   ├── stream-creator.ts    # Criação de chats e streams Qwen
+│   │   └── warm-pool.ts         # Pool de chats pré-aquecidos
+│   ├── tests/                   # Testes automatizados (node:test)
 │   ├── tools/
 │   │   ├── parser.ts            # Parser de <tool_call> tags
 │   │   ├── registry.ts          # Registro de tools
@@ -248,11 +301,14 @@ qwenproxy/
 │   └── utils/
 │       ├── context-truncation.ts # Truncamento de contexto
 │       ├── json.ts              # Parser JSON robusto
+│       ├── qwen-stream-parser.ts # Parser de streams SSE do Qwen
 │       └── types.ts             # Re-exports de tipos
 ├── data/                        # Banco SQLite (gitignored)
 ├── qwen_profiles/               # Perfis de navegador por conta (gitignored)
 ├── Dockerfile
 ├── docker-compose.yml
+├── tsconfig.json
+├── tsconfig.build.json
 └── package.json
 ```
 
@@ -267,58 +323,6 @@ qwenproxy/
 | Sessão expirada | Execute `npm run login` para renovar cookies |
 | Rate limit em todas as contas | Adicione mais contas via `npm run login` |
 | Banco corrompido | Apague `data/qwenproxy.db` e re-adicione as contas |
-
----
-
-## Blindagens Dodo (Customizações de Produção)
-
-Este fork inclui customizações exclusivas ("Blindagens Dodo") aplicadas sobre o upstream para garantir estabilidade, performance e resiliência em produção. Qualquer atualização do upstream deve preservar estas modificações.
-
-### Anti-Bot e Captcha (TMD)
-
-- **Solver de Captcha Baxia Nativo** (`src/services/captcha-solver.ts`) - Pipeline híbrido em 3 etapas: (1) heurística geométrica rápida do upstream, (2) fallback DeepSeek Vision via microserviço local `captchaResolve` na porta 50006, (3) alerta físico (beep + MessageBox Windows) após 3 falhas. Simulação humanizada de arraste com 15 passos progressivos e tremores verticais.
-- **Higienização de URL de TMD** (`src/services/stream-creator.ts`) - Função `cleanPunishUrl` que limpa a URL do TMD (porta redundante `:443`, barras duplas). Auto-persistência de cookies `x5sec` via `saveStorageState` após resolução.
-- **Preservação de Bypass WAF** (`src/services/browser-manager.ts`) - `fs.rmSync` comentado em `resetBrowserProfile` para preservar cookies e `_state.json` de bypasses manuais.
-- **Liberação de Imagens de Captcha** - Filtro de resource blocking adaptado para permitir imagens contendo `captcha`, `alicdn`, `aliyun` ou `_____tmd_____`, garantindo renderização correta dos puzzles.
-- **Enter Fallback** (`src/services/header-interceptor.ts`) - `sleep(1500)` + envio incondicional de `Enter` via teclado como reforço pós-clique, evitando falhas silenciosas do SPA do Qwen.
-
-### Concorrência e Rate Limit
-
-- **Warm Pool (Piscina de Chats Aquecidos)** (`src/services/warm-pool.ts`) - Fila em background que mantém chats da Qwen pré-criados e prontos. Delay humanizado de 2.5s a 5.5s entre criações para evadir WAF. Zera latência de criação de chat no momento da mensagem.
-- **Rate Tracker Global Dinâmico** (`src/core/rate-tracker.ts`) - Intercepta erro `RateLimited` da Qwen e aplica cooldown temporário na conta, roteando tráfego para próxima conta disponível ou modo Convidado (GUEST).
-- **Prevenção de Tarpit** (`src/services/warm-pool.ts`) - Delay aleatório de 2.5s a 5.5s antes de qualquer request de criação de chat no `refillPoolForAccount`, humanizando a rotina e evadindo o WAF.
-
-### Otimizações de Memória e Performance
-
-- **Motor Playwright Singleton** (`src/services/browser-manager.ts`) - Arquitetura upstream com navegador único + contextos isolados (`browser.newContext`). Estado salvo em `_state.json`. Redução de ~300MB/conta para ~50MB.
-- **Flags Agressivas de Chromium** - `--disable-gpu`, `--js-flags=--max-old-space-size=256`, `--disable-software-rasterizer`, janela compacta `500,400`, bloqueio de mídias pesadas via `route.abort()`.
-- **Blindagem de Stream** (`src/routes/stream-handler.ts`) - Condição `delta.phase === 'answer' || (delta.phase === undefined && delta.content !== undefined)` para resgatar blocos de texto sem declaração de fase.
-
-### Estabilidade de Streaming
-
-- **Sliding Window Maximum Overlap** (`src/routes/sse-parser.ts`) - Algoritmo de Maximum Overlap com limiar de 32 caracteres (upstream usa 4) para eliminar duplicação de palavras causada pelo sliding window da Qwen.
-- **Auto-Recuperador de JSON Quebrado** (`src/utils/json.ts`, `src/tools/parser.ts`) - Regex universais para consertar chaves sem aspas, omissão de `arguments`, e extração brute-force de tool calls malformados. Blindagem anti-travamento com flatten de argumentos duplamente aninhados.
-- **Parser XML String-Aware** (`src/tools/parser.ts`) - Detecção de `</tool_call>` caractere por caractere observando strings JSON, suporte a tags truncadas e metadados acoplados (`</tool_call<environment_details>`).
-
-### Timeout e Rede
-
-- **Undici 2h Timeout** (`src/index.ts`) - `setGlobalDispatcher(new Agent({ headersTimeout: 7200000, bodyTimeout: 7200000 }))` para processar contextos massivos sem timeout de 5 minutos.
-- **Anti-Tarpit no Playwright** (`src/services/browser-manager.ts`) - `timeout: 15000` em todos os `page.goto` de login e `AbortController` de 15s no fetch da API de login via browser.
-- **Resumidor de Payload Anti-DDoS** (`src/services/payload-summarizer.ts`) - Sumarização sequencial segmentada por caracteres (60k chars) para evitar ban por requisições simultâneas.
-
-### Compatibilidade Anthropic
-
-- **Injeção de Rota Anthropic** (`src/api/server.ts`) - `app.route('', anthropicApp)` para garantir compatibilidade com Claude Code.
-- **Estimativa CJK-Aware de Tokens** (`src/utils/token-estimator.ts`) - Heurística inteligente: ~4 chars/token para texto não-CJK, ~1 char/token para CJK.
-- **Mapeamento Claude 3/4** (`src/routes/anthropic/translate.ts`) - Suporte nativo a `claude-opus-4-8`, `claude-sonnet-4`, `claude-haiku-4` direcionados para Qwen.
-- **Blocos de Pensamento Translúcidos** - Restauração de `reasoning_content` da Qwen para eventos `thinking` e `thinking_delta` da Anthropic.
-- **Abort Controller de Streaming** (`src/routes/anthropic/index.ts`) - Listener `c.req.raw.signal?.addEventListener('abort')` para matar conexões fantasma ao fechar a IDE.
-
-### Observabilidade e Logs
-
-- **Logs com Timestamp Customizado** (`src/index.ts`) - Override de `console.log/warn/error` com formato `[DD/MM/YYYY HH:MM]`.
-- **Identificação de E-mail nos Alertas TMD** (`src/services/stream-creator.ts`) - Mapeamento de UUIDs para e-mail via `getAccountCredentials(accountId)?.email` nos alertas de bloqueio.
-- **Alerta Físico de Captcha** - Função `triggerWindowsAlert(accountName)` com beep sonoro (`\x07`) e MessageBox nativo do Windows via PowerShell.
 
 ---
 

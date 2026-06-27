@@ -1,3 +1,135 @@
+## [1.12.4](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.3...v1.12.4) (2026-06-27)
+
+
+### Bug Fixes
+
+* tolerate swarm volume chown failures ([b487886](https://github.com/pedrofariasx/qwenproxy/commit/b487886b0eb86150d442a4edf5a61ff77832c08d))
+
+## [1.12.3](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.2...v1.12.3) (2026-06-27)
+
+
+### Bug Fixes
+
+* repair docker volume permissions ([07633f8](https://github.com/pedrofariasx/qwenproxy/commit/07633f85544feedc0e6d38b1965b1c2ac823cc7f))
+
+## [1.12.2](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.1...v1.12.2) (2026-06-23)
+
+
+### Bug Fixes
+
+* improve editor tool call parsing ([62e6fac](https://github.com/pedrofariasx/qwenproxy/commit/62e6fac754c0ccbcd1547b9ad8717c2ab1001ce1))
+
+## [1.12.1](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.0...v1.12.1) (2026-06-22)
+
+
+### Bug Fixes
+
+* keep qwen lanes on stable page ([1458070](https://github.com/pedrofariasx/qwenproxy/commit/14580709e02a91c426df666307c7411bb601238c))
+
+# [1.12.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.11.0...v1.12.0) (2026-06-22)
+
+
+### Features
+
+* isolate single-account concurrency lanes ([ba953e8](https://github.com/pedrofariasx/qwenproxy/commit/ba953e8ce17a337582f971381c257ae3d7fc1ff8))
+
+# [1.11.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.10.2...v1.11.0) (2026-06-22)
+
+
+### Features
+
+* improve tool calls and qwen anti-bot settings ([94f92ce](https://github.com/pedrofariasx/qwenproxy/commit/94f92cea452c3aec9ed54d45351d366f215c9410))
+
+## [1.10.2](https://github.com/pedrofariasx/qwenproxy/compare/v1.10.1...v1.10.2) (2026-06-21)
+
+
+### Bug Fixes
+
+* sequentialize account init, validate storage state, use headless=new and increase timeouts ([46cdcc0](https://github.com/pedrofariasx/qwenproxy/commit/46cdcc03551b7cc366a08de59fd7b28ddad96299))
+
+## [1.10.1](https://github.com/pedrofariasx/qwenproxy/compare/v1.10.0...v1.10.1) (2026-06-21)
+
+
+### Bug Fixes
+
+* add mouse lock to prevent session-keeper interference during captcha solving ([121bc01](https://github.com/pedrofariasx/qwenproxy/commit/121bc01555636e0ae5886763f8925b85cc2bda5e))
+
+# [1.10.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.9.0...v1.10.0) (2026-06-21)
+
+
+### Features
+
+* add session keep-alive to prevent captcha after inactivity ([efb2183](https://github.com/pedrofariasx/qwenproxy/commit/efb2183ad3bba5c7fac497988f712f163b510c9a))
+
+# [1.9.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.8.0...v1.9.0) (2026-06-21)
+
+
+### Features
+
+* implement advanced anti-detection with deterministic fingerprints and humanized behavior ([f2af6d7](https://github.com/pedrofariasx/qwenproxy/commit/f2af6d70bb45faf94d8b2f1c47b52cd775c49ff3))
+
+# [1.8.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.7.3...v1.8.0) (2026-06-19)
+
+
+### Bug Fixes
+
+* resolve lint errors in captcha-solver and captcha test ([5083df0](https://github.com/pedrofariasx/qwenproxy/commit/5083df00ee0afff8a90c91ac350b391d62d86b6b))
+
+
+### Features
+
+* add automated Baxia captcha solver and enhance anti-detection fingerprint ([7eda9bc](https://github.com/pedrofariasx/qwenproxy/commit/7eda9bca2530949d396b5f0481665a59644816b7))
+
+## [1.7.3](https://github.com/pedrofariasx/qwenproxy/compare/v1.7.2...v1.7.3) (2026-06-18)
+
+
+### Bug Fixes
+
+* prevent unhandled promise rejection in stream bridge body ([be6c7b8](https://github.com/pedrofariasx/qwenproxy/commit/be6c7b80b5741828ccd452ddaf116005e22a0908))
+
+## [1.7.2](https://github.com/pedrofariasx/qwenproxy/compare/v1.7.1...v1.7.2) (2026-06-17)
+
+
+### Performance Improvements
+
+* optimize Docker setup with noble base, shm_size, resource limits and healthcheck ([f0196e2](https://github.com/pedrofariasx/qwenproxy/commit/f0196e2afb93418053ff15c4ec057b7bc7d0d1c1))
+
+## [1.7.1](https://github.com/pedrofariasx/qwenproxy/compare/v1.7.0...v1.7.1) (2026-06-16)
+
+
+### Performance Improvements
+
+* use shared browser instance with isolated contexts to reduce RAM usage ([6b58072](https://github.com/pedrofariasx/qwenproxy/commit/6b580724ba023e9ddeaabdf68a02a3bc68cc144d))
+
+# [1.7.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.6.4...v1.7.0) (2026-06-15)
+
+
+### Features
+
+* improve large-context tool-call reliability ([dcc0ac1](https://github.com/pedrofariasx/qwenproxy/commit/dcc0ac10ff988a3c2b55d2cf689cf3cb0283c8b8))
+
+## [1.6.4](https://github.com/pedrofariasx/qwenproxy/compare/v1.6.3...v1.6.4) (2026-06-12)
+
+
+### Performance Improvements
+
+* make all timeouts configurable via env and increase defaults for slow connections ([c0c486a](https://github.com/pedrofariasx/qwenproxy/commit/c0c486af46a3a65e5eb15c26268a66b038c3d764))
+* reuse existing unused chats from API before creating new ones in warm pool ([3ce801b](https://github.com/pedrofariasx/qwenproxy/commit/3ce801b181d1facfbe13a5c7dfd1aa2e6d9c90ed))
+
+## [1.6.3](https://github.com/pedrofariasx/qwenproxy/compare/v1.6.2...v1.6.3) (2026-06-12)
+
+
+### Bug Fixes
+
+* restore header interception by reverting to click-first send logic with Enter fallback ([f994a53](https://github.com/pedrofariasx/qwenproxy/commit/f994a53ed1de17e9b8c315d9bd67efcd5e44d909))
+
+## [1.6.2](https://github.com/pedrofariasx/qwenproxy/compare/v1.6.1...v1.6.2) (2026-06-12)
+
+
+### Bug Fixes
+
+* restore header interception reliability by increasing input/update delays ([7cd31c4](https://github.com/pedrofariasx/qwenproxy/commit/7cd31c4589558a2bcf2a1fb4b4f5c89dbe3f8790))
+
 ## [1.6.1](https://github.com/pedrofariasx/qwenproxy/compare/v1.6.0...v1.6.1) (2026-06-12)
 
 
