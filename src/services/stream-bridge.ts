@@ -122,6 +122,15 @@ export async function browserStreamFetch(
     metaReject(new Error(`Browser stream fetch timed out waiting for response metadata after ${metaTimeoutMs}ms`));
   }, metaTimeoutMs);
 
+  const safetyTimeout = setTimeout(() => {
+    const cb = streamCallbacks.get(reqId);
+    if (cb) {
+      cb.onError('Safety stream timeout of 10 minutes exceeded');
+    }
+    streamCallbacks.delete(reqId);
+    abortControllers.delete(reqId);
+  }, 10 * 60 * 1000); // 10 minutes safety TTL
+
   streamCallbacks.set(reqId, {
     onMeta: (meta) => {
       clearTimeout(metaTimeout);
@@ -131,6 +140,7 @@ export async function browserStreamFetch(
     onEnd: () => {},
     onError: (msg: string) => {
       clearTimeout(metaTimeout);
+      clearTimeout(safetyTimeout);
       metaReject(new Error(msg));
     },
     onBody: () => {},
@@ -155,18 +165,21 @@ export async function browserStreamFetch(
           try { controller.enqueue(enc.encode(chunk)); } catch { /* ignore */ }
         };
         cb.onEnd = () => {
+          clearTimeout(safetyTimeout);
           try { controller.close(); } catch { /* ignore */ }
           bodyResolve('');
           streamCallbacks.delete(reqId);
           abortControllers.delete(reqId);
         };
         cb.onError = (msg: string) => {
+          clearTimeout(safetyTimeout);
           try { controller.error(new Error(msg)); } catch { /* ignore */ }
           bodyReject(new Error(msg));
           streamCallbacks.delete(reqId);
           abortControllers.delete(reqId);
         };
         cb.onBody = (text: string) => {
+          clearTimeout(safetyTimeout);
           bodyResolve(text);
           streamCallbacks.delete(reqId);
           abortControllers.delete(reqId);
@@ -225,6 +238,7 @@ export async function browserStreamFetch(
         });
       },
       cancel() {
+        clearTimeout(safetyTimeout);
         page.evaluate((reqId: string) => {
           const c = (window as any).__abortControllers?.[reqId];
           if (c) { c.abort(); delete (window as any).__abortControllers[reqId]; }
@@ -237,6 +251,7 @@ export async function browserStreamFetch(
     const meta = await metaPromise;
 
     const abortFn = () => {
+      clearTimeout(safetyTimeout);
       page.evaluate((reqId: string) => {
         const c = (window as any).__abortControllers?.[reqId];
         if (c) { c.abort(); delete (window as any).__abortControllers[reqId]; }

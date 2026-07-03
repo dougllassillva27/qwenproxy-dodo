@@ -22,6 +22,7 @@ VOLUME ["/app/data", "/app/qwen_profiles"]
 
 EXPOSE 3000
 ENV NODE_ENV=production PORT=3000
+ENV NODE_OPTIONS="--max-old-space-size=512 --expose-gc --max-semi-space-size=16"
 
 ENTRYPOINT ["/usr/bin/dumb-init", "--", "/app/docker-entrypoint.sh"]
 CMD ["node", "dist/index.js"]

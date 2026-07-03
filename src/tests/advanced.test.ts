@@ -56,7 +56,7 @@ test('multiturn-thinking-tools: maintains reasoning_content history', async () =
     // The proxy transforms messages into a Qwen-compatible prompt.
     // Verify the prompt (in the request body) contains context from all messages.
     assert.ok(capturedBody.includes('hello') || capturedBody.includes('User: hello'), 'Must include user message');
-    assert.ok(capturedBody.includes('thinking about hello'), 'Must include reasoning content');
+    assert.ok(!capturedBody.includes('thinking about hello'), 'Must NOT include reasoning content to avoid token waste');
     assert.ok(capturedBody.includes('tool_call') || capturedBody.includes('"name": "test"'), 'Must include tool call info');
     assert.ok(capturedBody.includes('Tool Response (test): success') || capturedBody.includes('success'), 'Must include tool response');
   } finally {
@@ -160,7 +160,7 @@ test('caching-streaming and cache-control: returns prompt_tokens_details', async
   }
 });
 
-test.skip('session-parent-tracking: appends messages using response message_id as parent', async () => {
+test('session-parent-tracking: appends messages using response message_id as parent', async () => {
   const capturedPayloads: any[] = [];
 
   const restore = setupFetchMock((url, init) => {

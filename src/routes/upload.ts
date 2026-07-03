@@ -7,6 +7,7 @@
 import type { Context } from "hono";
 import { getQwenHeaders } from "../services/playwright.js";
 import crypto from "crypto";
+import { Readable } from "stream";
 
 interface STSResponse {
   success: boolean;
@@ -119,10 +120,11 @@ async function refreshUploadHeaders(): Promise<Record<string, string> | null> {
 }
 
 /**
- * Upload file to Alibaba Cloud OSS using STS credentials
+ * Upload file stream to Alibaba Cloud OSS using STS credentials
  */
-async function uploadToOSS(
-  fileBuffer: ArrayBuffer,
+async function uploadToOSSStream(
+  fileStream: Readable,
+  filesize: number,
   stsData: STSResponse["data"],
   filename: string,
 ): Promise<string> {
@@ -158,51 +160,27 @@ async function uploadToOSS(
     refreshSTSTokenInterval: 300000,
   });
 
-  const buffer = Buffer.from(fileBuffer);
-  const ext = filename.split(".").pop()?.toLowerCase() || "";
-  const mimeMap: Record<string, string> = {
-    // Images
-    png: "image/png",
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    gif: "image/gif",
-    webp: "image/webp",
-    // Video
-    mp4: "video/mp4",
-    mov: "video/quicktime",
-    avi: "video/x-msvideo",
-    webm: "video/webm",
-    mkv: "video/x-matroska",
-    // Audio
-    mp3: "audio/mpeg",
-    wav: "audio/wav",
-    ogg: "audio/ogg",
-    flac: "audio/flac",
-    m4a: "audio/mp4",
-    aac: "audio/aac",
-    // Documents
-    pdf: "application/pdf",
-    doc: "application/msword",
-    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    xls: "application/vnd.ms-excel",
-    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ppt: "application/vnd.ms-powerpoint",
-    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    txt: "text/plain",
-    md: "text/markdown",
-    csv: "text/csv",
-    json: "application/json",
-    xml: "application/xml",
-    html: "text/html",
-    zip: "application/zip",
-  };
-  const contentType = mimeMap[ext] || "application/octet-stream";
+  const typeInfo = detectFileType(filename);
+  const contentType = typeInfo.mime;
 
-  await client.put(file_path, buffer, {
+  await client.putStream(file_path, fileStream, {
+    contentLength: filesize,
     headers: { "Content-Type": contentType },
-  });
+  } as any);
 
   return file_url.split("?")[0];
+}
+
+/**
+ * Upload file to Alibaba Cloud OSS (Buffer wrapper)
+ */
+async function uploadToOSS(
+  fileBuffer: ArrayBuffer,
+  stsData: STSResponse["data"],
+  filename: string,
+): Promise<string> {
+  const stream = Readable.from(Buffer.from(fileBuffer));
+  return uploadToOSSStream(stream, fileBuffer.byteLength, stsData, filename);
 }
 
 /**
@@ -310,8 +288,8 @@ export async function uploadFile(c: Context) {
       qwenFileType,
       headers,
     );
-    const fileBuffer = await file.arrayBuffer();
-    const fileUrl = await uploadToOSS(fileBuffer, stsData, file.name);
+    const fileStream = Readable.fromWeb(file.stream() as any);
+    const fileUrl = await uploadToOSSStream(fileStream, file.size, stsData, file.name);
 
     return c.json({
       url: fileUrl,
@@ -734,4 +712,53 @@ export async function processImagesForQwen(
   }
 
   return { text: textParts.join("\n"), files };
+}
+
+const LARGE_PROMPT_THRESHOLD = 131072;
+
+export async function uploadLargePromptAsFile(
+  promptText: string,
+  headers: Record<string, string>,
+): Promise<QwenFileEntry | null> {
+  const byteLength = Buffer.byteLength(promptText, "utf-8");
+  if (byteLength <= LARGE_PROMPT_THRESHOLD) return null;
+
+  const filename = `prompt_${Date.now()}.txt`;
+  const buffer = Buffer.from(promptText, "utf-8");
+
+  const stsData = await getSTSToken(filename, buffer.length, "file", headers);
+  const fileUrl = await uploadToOSS(buffer.buffer, stsData, filename);
+
+  return {
+    type: "file",
+    file: {
+      created_at: Date.now(),
+      data: {},
+      filename,
+      hash: null,
+      id: stsData.file_id,
+      user_id: "proxy-user",
+      meta: { name: filename, size: buffer.length, content_type: "text/plain" },
+      update_at: Date.now(),
+      lastModified: Date.now(),
+      name: filename,
+      webkitRelativePath: "",
+      size: buffer.length,
+      type: "text/plain",
+    },
+    id: stsData.file_id,
+    url: fileUrl,
+    name: filename,
+    collection_name: "",
+    progress: 100,
+    status: "uploaded",
+    greenNet: "success",
+    size: buffer.length,
+    error: "",
+    itemId: crypto.randomUUID(),
+    file_type: "text/plain",
+    showType: "file",
+    file_class: "file",
+    uploadTaskId: crypto.randomUUID(),
+  };
 }

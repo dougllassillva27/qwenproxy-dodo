@@ -1,3 +1,39 @@
+## [1.12.9](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.8...v1.12.9) (2026-07-03)
+
+
+### Bug Fixes
+
+* release account lock on success, improve stream line processing, enhance prompt handling, optimize warm pool refill timing ([3806cf6](https://github.com/pedrofariasx/qwenproxy/commit/3806cf6119c267d0ee6131912cef06c881f4c716))
+
+## [1.12.8](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.7...v1.12.8) (2026-07-03)
+
+
+### Bug Fixes
+
+* remove reasoning_content from prompt history to reduce token usage ([4f7702e](https://github.com/pedrofariasx/qwenproxy/commit/4f7702ed07b55f6e20297c4e50f3dd9593be480c))
+
+## [1.12.7](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.6...v1.12.7) (2026-07-02)
+
+
+### Bug Fixes
+
+* prevent content duplication in non-streaming mode by tracking content length and suffix state ([05a8236](https://github.com/pedrofariasx/qwenproxy/commit/05a8236e879d03ca9c02a05778cb7a92c6d2b06b))
+
+## [1.12.6](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.5...v1.12.6) (2026-07-02)
+
+
+### Bug Fixes
+
+* recover malformed tool calls with missing opening quotes in JSON values ([9328bde](https://github.com/pedrofariasx/qwenproxy/commit/9328bde90ed66f0319e709073a4138d59e289e3d))
+* recover malformed tool calls with missing opening quotes; add -thinking model variant support; remove large prompt file upload; optimize memory cache scan ([a63f054](https://github.com/pedrofariasx/qwenproxy/commit/a63f0544dd788b3678ebcc86b7327493496ac232))
+
+## [1.12.5](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.4...v1.12.5) (2026-07-02)
+
+
+### Performance Improvements
+
+* optimize streaming, tool resolution, and caching for long chats ([cb518e0](https://github.com/pedrofariasx/qwenproxy/commit/cb518e079e945af92b7ca5e4c99a7c8e38d4eac6))
+
 ## [1.12.4](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.3...v1.12.4) (2026-06-27)
 
 

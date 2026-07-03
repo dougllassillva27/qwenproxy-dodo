@@ -1,10 +1,10 @@
 import type { FingerprintProfile } from './fingerprint.js';
 
+let cachedStealthScript: string | null = null;
+
 export function getStealthScript(profile: FingerprintProfile): string {
-  return `
-    (function() {
-      const PROFILE = ${JSON.stringify(profile)};
-      
+  if (!cachedStealthScript) {
+    cachedStealthScript = `
       function mulberry32(seed) {
         return function() {
           seed |= 0;
@@ -98,255 +98,199 @@ export function getStealthScript(profile: FingerprintProfile): string {
               bitness: PROFILE.bitness,
               model: '',
               uaFullVersion: PROFILE.chromeVersion,
-              fullVersionList: PROFILE.fullBrands,
             };
           }
         };
-        defineOnPrototype(navigator, 'userAgentData', userAgentData);
+        Object.defineProperty(navigator, 'userAgentData', {
+          get: () => userAgentData,
+          configurable: true,
+          enumerable: true
+        });
+        spoofedFunctions.add(Object.getOwnPropertyDescriptor(navigator, 'userAgentData').get);
       } catch(e) {}
 
-      defineOnPrototype(navigator, 'languages', Object.freeze(PROFILE.languages));
-      defineOnPrototype(navigator, 'hardwareConcurrency', PROFILE.hardwareConcurrency);
-      defineOnPrototype(navigator, 'deviceMemory', PROFILE.deviceMemory);
-      defineOnPrototype(screen, 'colorDepth', PROFILE.colorDepth);
-      defineOnPrototype(screen, 'pixelDepth', PROFILE.pixelDepth);
+      defineOnPrototype(navigator, 'languages', ['pt-BR', 'pt', 'en-US', 'en']);
+      defineOnPrototype(navigator, 'language', 'pt-BR');
 
       try {
-        if (window.outerWidth === 0 || window.outerHeight === 0) {
-          Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth + PROFILE.outerWidthOffset });
-          Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight + PROFILE.outerHeightOffset });
-        }
+        const screenProto = Object.getPrototypeOf(screen);
+        defineOnPrototype(screen, 'width', PROFILE.screenWidth || 1920);
+        defineOnPrototype(screen, 'height', PROFILE.screenHeight || 1080);
+        defineOnPrototype(screen, 'availWidth', PROFILE.screenWidth || 1920);
+        defineOnPrototype(screen, 'availHeight', (PROFILE.screenHeight || 1080) - 40);
+        defineOnPrototype(screen, 'colorDepth', 24);
+        defineOnPrototype(screen, 'pixelDepth', 24);
       } catch(e) {}
 
-      window.chrome = {
-        runtime: {
-          onConnect: Object.create(null),
-          onMessage: Object.create(null),
-          sendMessage: function() {},
-          connect: function() { return { onMessage: Object.create(null), postMessage: function() {} }; },
-        },
-        loadTimes: function() {
-          return {
-            requestTime: Date.now() / 1000,
-            startLoadTime: Date.now() / 1000,
-            commitLoadTime: Date.now() / 1000,
-            finishDocumentLoadTime: Date.now() / 1000,
-            finishLoadTime: Date.now() / 1000,
-            firstPaintTime: Date.now() / 1000,
-            firstPaintAfterLoadTime: 0,
-            navigationType: 'Other',
-            wasFetchedViaSpdy: false,
-            wasNpnNegotiated: true,
-            npnNegotiatedProtocol: 'http/1.1',
-            wasAlternateProtocolAvailable: false,
-            alternateProtocol: '',
-          };
-        },
-        csi: function() {
-          return {
-            startE: Date.now(),
-            onloadT: Date.now(),
-            pageT: Math.random() * 1000,
-            tran: 15,
-          };
-        },
-        app: {
-          isInstalled: false,
-          getDetails: function() { return null; },
-          getIsInstalled: function() { return false; },
-          InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
-          RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
-        },
-      };
+      try {
+        const pluginData = [
+          { name: 'PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }] },
+          { name: 'Chrome PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }] },
+          { name: 'Chromium PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }] },
+          { name: 'Microsoft Edge PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }] },
+          { name: 'WebKit built-in PDF', description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }] }
+        ];
 
-      const originalQuery = window.navigator.permissions.query;
-      window.navigator.permissions.query = (parameters) =>
-        parameters.name === 'notifications'
-          ? Promise.resolve({ state: (typeof Notification !== 'undefined' ? Notification.permission : 'default'), onchange: null })
-          : originalQuery(parameters);
+        const plugins = [];
+        const mimeTypes = [];
 
-      const getParameter = WebGLRenderingContext.prototype.getParameter;
-      WebGLRenderingContext.prototype.getParameter = function(parameter) {
-        if (parameter === 37445) return PROFILE.webglVendor;
-        if (parameter === 37446) return PROFILE.webglRenderer;
-        return getParameter.apply(this, arguments);
-      };
-      spoofedFunctions.add(WebGLRenderingContext.prototype.getParameter);
-      
-      if (typeof WebGL2RenderingContext !== 'undefined') {
-        const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+        pluginData.forEach(p => {
+          const mTypes = p.mimeTypes.map(m => {
+            const mt = Object.create(MimeType.prototype);
+            Object.defineProperties(mt, {
+              type: { get: () => m.type },
+              suffixes: { get: () => m.suffixes },
+              description: { get: () => m.description },
+              enabledPlugin: { get: () => pl }
+            });
+            mimeTypes.push(mt);
+            return mt;
+          });
+
+          const pl = Object.create(Plugin.prototype);
+          Object.defineProperties(pl, {
+            name: { get: () => p.name },
+            description: { get: () => p.description },
+            filename: { get: () => p.filename },
+            length: { get: () => mTypes.length },
+            item: { value: (index) => mTypes[index] },
+            namedItem: { value: (name) => mTypes[name] }
+          });
+          mTypes.forEach((mt, idx) => {
+            Object.defineProperty(pl, idx, { get: () => mt });
+            Object.defineProperty(pl, mt.type, { get: () => mt });
+          });
+          plugins.push(pl);
+        });
+
+        const pluginArray = Object.create(PluginArray.prototype);
+        Object.defineProperties(pluginArray, {
+          length: { get: () => plugins.length },
+          item: { value: (index) => plugins[index] },
+          namedItem: { value: (name) => plugins.find(p => p.name === name) },
+          refresh: { value: () => {} }
+        });
+        plugins.forEach((pl, idx) => {
+          Object.defineProperty(pluginArray, idx, { get: () => pl });
+          Object.defineProperty(pluginArray, pl.name, { get: () => pl });
+        });
+
+        const mimeTypeArray = Object.create(MimeTypeArray.prototype);
+        Object.defineProperties(mimeTypeArray, {
+          length: { get: () => mimeTypes.length },
+          item: { value: (index) => mimeTypes[index] },
+          namedItem: { value: (name) => mimeTypes.find(m => m.type === name) }
+        });
+        mimeTypes.forEach((mt, idx) => {
+          Object.defineProperty(mimeTypeArray, idx, { get: () => mt });
+          Object.defineProperty(mimeTypeArray, mt.type, { get: () => mt });
+        });
+
+        Object.defineProperty(navigator, 'plugins', { get: () => pluginArray });
+        Object.defineProperty(navigator, 'mimeTypes', { get: () => mimeTypeArray });
+      } catch(e) {}
+
+      try {
+        const hardwareConcurrency = PROFILE.hardwareConcurrency || 8;
+        defineOnPrototype(navigator, 'hardwareConcurrency', hardwareConcurrency);
+      } catch(e) {}
+
+      try {
+        const deviceMemory = PROFILE.deviceMemory || 8;
+        defineOnPrototype(navigator, 'deviceMemory', deviceMemory);
+      } catch(e) {}
+
+      try {
+        const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(parameter) {
+          if (parameter === 37445) return PROFILE.webglVendor || 'Google Inc. (Intel)';
+          if (parameter === 37446) return PROFILE.webglRenderer || 'ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)';
+          return originalGetParameter.call(this, parameter);
+        };
+        spoofedFunctions.add(WebGLRenderingContext.prototype.getParameter);
+
+        const originalGetParameter2 = WebGL2RenderingContext.prototype.getParameter;
         WebGL2RenderingContext.prototype.getParameter = function(parameter) {
-          if (parameter === 37445) return PROFILE.webglVendor;
-          if (parameter === 37446) return PROFILE.webglRenderer;
-          return getParameter2.apply(this, arguments);
+          if (parameter === 37445) return PROFILE.webglVendor || 'Google Inc. (Intel)';
+          if (parameter === 37446) return PROFILE.webglRenderer || 'ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)';
+          return originalGetParameter2.call(this, parameter);
         };
         spoofedFunctions.add(WebGL2RenderingContext.prototype.getParameter);
-      }
+      } catch(e) {}
 
-      const _readPixels = WebGLRenderingContext.prototype.readPixels;
-      WebGLRenderingContext.prototype.readPixels = function(x, y, width, height, format, type, pixels) {
-        _readPixels.apply(this, arguments);
-        if (pixels) {
-          const maxPixels = Math.min(pixels.length, 10000);
-          for (let i = 0; i < maxPixels; i++) {
-            if (webglRng() < 0.03) {
-              pixels[i] = Math.min(255, Math.max(0, pixels[i] + (webglRng() > 0.5 ? 1 : -1)));
-            }
+      try {
+        const originalGetShaderPrecisionFormat = WebGLRenderingContext.prototype.getShaderPrecisionFormat;
+        WebGLRenderingContext.prototype.getShaderPrecisionFormat = function(shaderType, precisionType) {
+          const format = originalGetShaderPrecisionFormat.call(this, shaderType, precisionType);
+          if (format) {
+            const precisionNoise = (webglRng() - 0.5) * 2;
+            const rangeMinNoise = Math.round((webglRng() - 0.5) * 2);
+            const rangeMaxNoise = Math.round((webglRng() - 0.5) * 2);
+            return {
+              rangeMin: format.rangeMin + rangeMinNoise,
+              rangeMax: format.rangeMax + rangeMaxNoise,
+              precision: format.precision + Math.round(precisionNoise)
+            };
           }
-        }
-      };
-      spoofedFunctions.add(WebGLRenderingContext.prototype.readPixels);
-      
-      if (typeof WebGL2RenderingContext !== 'undefined') {
-        const _readPixels2 = WebGL2RenderingContext.prototype.readPixels;
-        WebGL2RenderingContext.prototype.readPixels = function(x, y, width, height, format, type, pixels) {
-          _readPixels2.apply(this, arguments);
-          if (pixels) {
-            const maxPixels = Math.min(pixels.length, 10000);
-            for (let i = 0; i < maxPixels; i++) {
-              if (webglRng() < 0.03) {
-                pixels[i] = Math.min(255, Math.max(0, pixels[i] + (webglRng() > 0.5 ? 1 : -1)));
-              }
-            }
-          }
+          return format;
         };
-        spoofedFunctions.add(WebGL2RenderingContext.prototype.readPixels);
-      }
+        spoofedFunctions.add(WebGLRenderingContext.prototype.getShaderPrecisionFormat);
+      } catch(e) {}
 
-      Object.defineProperty(navigator, 'connection', {
-        get: () => ({
-          effectiveType: '4g',
-          rtt: 50,
-          downlink: 10,
-          saveData: false,
-          addEventListener: () => {},
-          removeEventListener: () => {},
-        }),
-      });
-
-      (function() {
-        function makeMime(desc, suffixes, type) {
-          const m = { description: desc, suffixes: suffixes, type: type };
-          return m;
-        }
-        const pdfMime = makeMime('Portable Document Format', 'pdf', 'application/pdf');
-        const pdfxMime = makeMime('Portable Document Format', 'pdf', 'text/pdf');
-        const pdfPlugin = {
-          name: 'PDF Viewer',
-          description: 'Portable Document Format',
-          filename: 'internal-pdf-viewer',
-          length: 2,
-          0: pdfMime,
-          1: pdfxMime,
-        };
-        pdfMime.enabledPlugin = pdfPlugin;
-        pdfxMime.enabledPlugin = pdfPlugin;
-
-        const chromePdfMime = makeMime('Portable Document Format', 'pdf', 'application/pdf');
-        const chromePdfMime2 = makeMime('Portable Document Format', 'pdf', 'text/pdf');
-        const chromePdfPlugin = {
-          name: 'Chrome PDF Viewer',
-          description: 'Portable Document Format',
-          filename: 'internal-pdf-viewer',
-          length: 2,
-          0: chromePdfMime,
-          1: chromePdfMime2,
-        };
-        chromePdfMime.enabledPlugin = chromePdfPlugin;
-        chromePdfMime2.enabledPlugin = chromePdfPlugin;
-
-        const nativePlugin = {
-          name: 'Native Client',
-          description: '',
-          filename: 'internal-nacl-plugin',
-          length: 2,
-          0: makeMime('Native Client Executable', '', 'application/x-nacl'),
-          1: makeMime('Portable Native Client Executable', '', 'application/x-pnacl'),
-        };
-        nativePlugin[0].enabledPlugin = nativePlugin;
-        nativePlugin[1].enabledPlugin = nativePlugin;
-
-        const pluginsList = [pdfPlugin, chromePdfPlugin, nativePlugin];
-        const mimeList = [pdfMime, pdfxMime, chromePdfMime, chromePdfMime2, nativePlugin[0], nativePlugin[1]];
-
-        function makeNamedNodeMap(items, namedEntries) {
-          const arr = [...items];
-          for (const [k, v] of namedEntries) arr[k] = v;
-          arr.item = function(i) { return this[i] || null; };
-          arr.namedItem = function(name) { return this[name] || null; };
-          arr.refresh = function() {};
-          return arr;
-        }
-
-        const pluginEntries = pluginsList.map((p, i) => [p.name, p]);
-        const mimeEntries = mimeList.map((m) => [m.type, m]);
-
-        const pluginsArr = makeNamedNodeMap(pluginsList, pluginEntries);
-        const mimeArr = makeNamedNodeMap(mimeList, mimeEntries);
-
-        defineOnPrototype(navigator, 'plugins', pluginsArr);
-        defineOnPrototype(navigator, 'mimeTypes', mimeArr);
-      })();
-
-      (function() {
-        const _toDataURL = HTMLCanvasElement.prototype.toDataURL;
-        const _toBlob = HTMLCanvasElement.prototype.toBlob;
-        const _getImageData = CanvasRenderingContext2D.prototype.getImageData;
-
-        function addNoise(canvas) {
-          try {
-            const ctx = canvas.getContext('2d');
-            if (!ctx) return;
-            const style = ctx.fillStyle;
-            ctx.fillStyle = 'rgba(255,255,255,0.01)';
-            ctx.fillRect(0, 0, 1, 1);
-            ctx.fillStyle = style;
-          } catch(e) {}
-        }
-
-        HTMLCanvasElement.prototype.toDataURL = function(...args) {
-          addNoise(this);
-          return _toDataURL.apply(this, args);
-        };
-        spoofedFunctions.add(HTMLCanvasElement.prototype.toDataURL);
-        
-        HTMLCanvasElement.prototype.toBlob = function(...args) {
-          addNoise(this);
-          return _toBlob.apply(this, args);
-        };
-        spoofedFunctions.add(HTMLCanvasElement.prototype.toBlob);
-
-        CanvasRenderingContext2D.prototype.getImageData = function(x, y, w, h) {
-          const imageData = _getImageData.apply(this, arguments);
-          const data = imageData.data;
-          const maxPixels = Math.min(data.length / 4, 2500);
-          for (let i = 0; i < maxPixels * 4; i += 4) {
-            if (canvasRng() < 0.05) {
-              data[i] = Math.min(255, Math.max(0, data[i] + (canvasRng() > 0.5 ? 1 : -1)));
-              data[i+1] = Math.min(255, Math.max(0, data[i+1] + (canvasRng() > 0.5 ? 1 : -1)));
-              data[i+2] = Math.min(255, Math.max(0, data[i+2] + (canvasRng() > 0.5 ? 1 : -1)));
-            }
-          }
-          return imageData;
-        };
-        spoofedFunctions.add(CanvasRenderingContext2D.prototype.getImageData);
-      })();
-
-      (function() {
-        if (typeof OfflineAudioContext === 'undefined') return;
-        const _startRendering = OfflineAudioContext.prototype.startRendering;
-        OfflineAudioContext.prototype.startRendering = function() {
-          return _startRendering.apply(this, arguments).then(buffer => {
+      try {
+        const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+        HTMLCanvasElement.prototype.toDataURL = function(type, encoderOptions) {
+          const context = this.getContext('2d');
+          if (context) {
             try {
-              for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
-                const data = buffer.getChannelData(ch);
-                for (let i = 0; i < Math.min(data.length, 100); i++) {
-                  data[i] += (audioRng() - 0.5) * 1e-7;
+              const width = this.width;
+              const height = this.height;
+              const imgData = context.getImageData(0, 0, width, height);
+              const data = imgData.data;
+              for (let i = 0; i < data.length; i += 4) {
+                if (data[i+3] > 0) {
+                  data[i] = Math.min(255, Math.max(0, data[i] + Math.round((canvasRng() - 0.5) * 2)));
+                  data[i+1] = Math.min(255, Math.max(0, data[i+1] + Math.round((canvasRng() - 0.5) * 2)));
+                  data[i+2] = Math.min(255, Math.max(0, data[i+2] + Math.round((canvasRng() - 0.5) * 2)));
                 }
               }
+              context.putImageData(imgData, 0, 0);
             } catch(e) {}
+          }
+          return originalToDataURL.call(this, type, encoderOptions);
+        };
+        spoofedFunctions.add(HTMLCanvasElement.prototype.toDataURL);
+      } catch(e) {}
+
+      try {
+        const originalGetChannelData = AudioBuffer.prototype.getChannelData;
+        AudioBuffer.prototype.getChannelData = function(channel) {
+          const data = originalGetChannelData.call(this, channel);
+          const noise = (audioRng() - 0.5) * 1e-7;
+          for (let i = 0; i < data.length; i++) {
+            data[i] += noise;
+          }
+          return data;
+        };
+        spoofedFunctions.add(AudioBuffer.prototype.getChannelData);
+      } catch(e) {}
+
+      (function() {
+        const originalStartRendering = OfflineAudioContext.prototype.startRendering;
+        OfflineAudioContext.prototype.startRendering = async function() {
+          try {
+            const buffer = await originalStartRendering.call(this);
+            const noise = (audioRng() - 0.5) * 1e-7;
+            for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+              const data = buffer.getChannelData(channel);
+              for (let i = 0; i < data.length; i++) {
+                data[i] += noise;
+              }
+            }
             return buffer;
-          });
+          } catch(e) {
+            throw e;
+          }
         };
         spoofedFunctions.add(OfflineAudioContext.prototype.startRendering);
       })();
@@ -372,6 +316,13 @@ export function getStealthScript(profile: FingerprintProfile): string {
           };
         }
       } catch(e) {}
+    `;
+  }
+
+  return `
+    (function() {
+      const PROFILE = ${JSON.stringify(profile)};
+      ${cachedStealthScript}
     })();
   `;
 }

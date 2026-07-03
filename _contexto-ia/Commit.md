@@ -1,26 +1,14 @@
-feat(proxy): merge cirúrgico v1.12.4 upstream e proteção Dodo intacta
+chore(merge): integra upstream v1.12.9 com blindagens dodo
 
-Este commit integra as atualizações oficiais do repositório qwenproxy (versões v1.12.2 a v1.12.4), realizando a fusão estrita e preservando 100% das blindagens de WAF locais (Dodo Shields).
+Mescla a atualizacao mainstream para suporte a novas chamadas de ferramenta e
+ajustes finos de streaming. Preserva e estende as otimizacoes de recursos de
+producao, incluindo:
 
-**🐳 Docker e Infraestrutura (1.12.3 & 1.12.4)**
-- Instalação do pacote `gosu` no `Dockerfile` e criação do script `docker-entrypoint.sh`.
-- Implementação da função `ensure_writable_dir` para curar erros de permissão (`chown`) em diretórios montados, tornando o container tolerante a falhas em ambientes Docker Swarm.
-- Refatoração no `README.md` alterando mounts em bind para volumes nomeados estritos (`qwenproxy_data` e `qwenproxy_profiles`).
-
-**🧠 Handler de Ferramentas e Sistema Anti-Alucinação (1.12.2)**
-- Adição das lógicas de detecção `isFileMutationTool` e `appendMissingFileMutationTools` em `tool-handler.ts`. O proxy agora força ativamente a inclusão de ferramentas de manipulação de arquivo providenciadas pelo IDE no contexto do LLM.
-- O System Prompt foi adaptado para repreender o Qwen em caso de alucinação de nomes genéricos (como "edit_file" ou "apply_patch"), obrigando o modelo a usar os nomes exatos mapeados pelo cliente.
-
-**🧩 Parser Tolerante a Falhas**
-- Injeção das funções `findToolEndMatch` e `matchesCaseInsensitiveAt` no `parser.ts` para detecção de encerramentos parciais/inválidos de tags XML enviados pela IDE, idêntico à proteção base já utilizada no ecossistema Anthropic.
-
-**🛡️ Auditoria de Blindagens Locais (Status: Intactas)**
-- Verificado em profundidade que o upstream não sobrepôs os arquivos núcleo do bypass de segurança.
-- **Iframe Hack** Bypass (`stream-bridge.ts`) permanece blindado.
-- **Atraso Anti-Tarpit** (`warm-pool.ts`) operante.
-- Evasões gráficas (`stealth.ts` e bloqueio de mídia em `browser-manager.ts`) continuam forçando economia de CPU/RAM.
-- Controle de alocação de memória do Playwright (`--max-old-space-size=256`) protegido com sucesso.
-
-**📦 Manutenção**
-- Incremento da versão do `package.json` diretamente de `1.12.1` para `1.12.4`.
-- Validado sem falhas com `npm run typecheck`.
+- Limites de heap de memoria (512MB RAM global, 128MB RAM Chromium)
+- Caching de script stealth em singleton
+- Otimizacao do reasoningBuffer usando arrays de chunks
+- Upload via stream continuo para ali-oss (putStream)
+- Recuperacao automatica de aba fechada do Chromium como erro re-tentavel
+- Encerramento de contextos Playwright inativos por mais de 15 minutos
+- Timeout de seguranca de 10 minutos para streams Web
+- Resolucao correta do parent_id de sessao a partir do historico de chat

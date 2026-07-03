@@ -60,6 +60,13 @@ export function getClientHintsHeaders(accountId?: string): Record<string, string
 }
 
 function getBrowserLaunchArgs(): string[] {
+  // Lê posição da janela do launcher para forçar chromes no mesmo monitor
+  const launcherX = process.env.LAUNCHER_WINDOW_X;
+  const launcherY = process.env.LAUNCHER_WINDOW_Y;
+  const windowPosition = (launcherX && launcherY)
+    ? `--window-position=${launcherX},${launcherY}`
+    : "--window-position=0,0";
+
   return Array.from(new Set([
     ...config.browser.args,
     '--disable-blink-features=AutomationControlled',
@@ -72,12 +79,9 @@ function getBrowserLaunchArgs(): string[] {
     '--enable-webgl',
     '--ignore-gpu-blocklist',
     '--enable-accelerated-2d-canvas',
-    '--disable-gpu',
-    '--disable-software-rasterizer',
-    '--disable-extensions',
-    '--disable-background-networking',
-    '--js-flags=--max-old-space-size=256',
+    '--js-flags=--max-old-space-size=128',
     '--window-size=500,400',
+    windowPosition,
   ]));
 }
 
@@ -133,6 +137,44 @@ export const accountPages = new Map<string, Page>();
 export const accountHeaderCaches = new Map<string, AccountHeaderCache>();
 export const cachedUserAgents = new Map<string, string>();
 export const cookieCaches = new Map<string, { cookie: string, timestamp: number }>();
+
+export const accountLastActivity = new Map<string, number>();
+
+export function updateLastActivity(accountId: string): void {
+  accountLastActivity.set(accountId, Date.now());
+}
+
+let idleMonitorInterval: ReturnType<typeof setInterval> | null = null;
+const IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+
+export function startIdleContextMonitor() {
+  if (idleMonitorInterval) return;
+  idleMonitorInterval = setInterval(async () => {
+    const now = Date.now();
+    for (const [accountId, lastActive] of accountLastActivity.entries()) {
+      if (accountId === 'global' || accountId === 'guest') continue;
+      if (now - lastActive > IDLE_TIMEOUT_MS) {
+        const acctContext = accountContexts.get(accountId);
+        if (acctContext) {
+          console.log(`[Playwright] Context for account ${accountId} has been idle for 15+ minutes. Closing to free RAM...`);
+          try {
+            await closePlaywrightForAccount(accountId);
+          } catch (err: any) {
+            console.error(`[Playwright] Failed to close idle context for ${accountId}:`, err.message);
+          }
+          accountLastActivity.delete(accountId);
+        }
+      }
+    }
+  }, 60000); // Check every 60s
+}
+
+export function stopIdleContextMonitor() {
+  if (idleMonitorInterval) {
+    clearInterval(idleMonitorInterval);
+    idleMonitorInterval = null;
+  }
+}
 
 let browser: Browser | null = null;
 let context: BrowserContext | null = null;
@@ -274,6 +316,11 @@ export async function getOrLaunchBrowser(browserType: BrowserType = 'chromium'):
 export class Mutex {
   private queue: (() => void)[] = [];
   private locked = false;
+  private onIdle?: () => void;
+
+  constructor(onIdle?: () => void) {
+    this.onIdle = onIdle;
+  }
 
   async acquire(): Promise<() => void> {
     if (!this.locked) {
@@ -293,6 +340,7 @@ export class Mutex {
       next();
     } else {
       this.locked = false;
+      this.onIdle?.();
     }
   }
 }
@@ -301,7 +349,9 @@ const uiMutexes = new Map<string, Mutex>();
 export function getUiMutex(accountId: string): Mutex {
   let m = uiMutexes.get(accountId);
   if (!m) {
-    m = new Mutex();
+    m = new Mutex(() => {
+      uiMutexes.delete(accountId);
+    });
     uiMutexes.set(accountId, m);
   }
   return m;
@@ -484,8 +534,8 @@ export async function resetBrowserProfile(cacheKey: string, accountId?: string):
     guestContext = null;
     guestPage = null;
     guestHeadersCache = null;
-    // fs.rmSync(profilePath, { recursive: true, force: true });
-    // fs.rmSync(storageStatePath(profileId), { force: true });
+    fs.rmSync(profilePath, { recursive: true, force: true });
+    fs.rmSync(storageStatePath(profileId), { force: true });
 
     console.warn(`[Playwright] Cleared browser profile for ${cacheKey}: ${profilePath}`);
   } catch (err: any) {
@@ -511,15 +561,6 @@ export async function initPlaywright(_headless = true, browserType: BrowserType 
 
   await context.addInitScript(getStealthScript(defaultProfile));
 
-  await context.route('**/*.{png,jpg,jpeg,gif,webp,mp4,webm,mp3,wav,m4a,ogg}', (route) => {
-    const url = route.request().url().toLowerCase()
-    if (url.includes('captcha') || url.includes('alicdn') || url.includes('aliyun') || url.includes('_____tmd_____')) {
-      route.continue()
-    } else {
-      route.abort()
-    }
-  })
-
   activePage = await context.newPage();
 
   const hasCredentials = !!(process.env.QWEN_EMAIL && process.env.QWEN_PASSWORD);
@@ -536,10 +577,15 @@ export async function initPlaywright(_headless = true, browserType: BrowserType 
   if (await hasValidAuthCookie(activePage)) {
     await saveStorageState(context, '_default');
   }
+
+  startIdleContextMonitor();
 }
 
 export async function closePlaywright() {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return;
+  stopIdleContextMonitor();
+  accountLastActivity.clear();
+
   for (const cache of accountHeaderCaches.values()) {
     cache.refreshInProgress = false;
   }
@@ -583,30 +629,11 @@ export async function initPlaywrightForAccount(account: QwenAccount, _headless =
 
   await acctContext.addInitScript(getStealthScript(acctProfile));
 
-  await acctContext.route('**/*.{png,jpg,jpeg,gif,webp,mp4,webm,mp3,wav,m4a,ogg}', (route) => {
-    const url = route.request().url().toLowerCase()
-    if (url.includes('captcha') || url.includes('alicdn') || url.includes('aliyun') || url.includes('_____tmd_____')) {
-      route.continue()
-    } else {
-      route.abort()
-    }
-  })
-
   const acctPage = await acctContext.newPage();
   accountContexts.set(account.id, acctContext);
   accountPages.set(account.id, acctPage);
 
-  // Minimiza janela via CDP (Chrome DevTools Protocol)
-  try {
-    const client = await acctPage.context().newCDPSession(acctPage);
-    const { windowId } = await client.send('Browser.getWindowForTarget');
-    await client.send('Browser.setWindowBounds', {
-      windowId,
-      bounds: { windowState: 'minimized' }
-    });
-  } catch (err) {
-    // Ignora erro se CDP não suportado
-  }
+  accountLastActivity.set(account.id, Date.now());
 
   const hasAuth = await hasValidAuthCookie(acctPage);
 
@@ -689,11 +716,19 @@ export async function closePlaywrightForAccount(accountId: string) {
     await acctContext.close();
     accountContexts.delete(accountId);
     accountPages.delete(accountId);
+    accountLastActivity.delete(accountId);
   }
 }
 
 export function getPageForAccount(accountId?: string): Page | null {
-  if (accountId === 'guest') return guestPage;
-  if (accountId) return accountPages.get(accountId) || null;
+  if (accountId === 'guest') {
+    updateLastActivity('guest');
+    return guestPage;
+  }
+  if (accountId) {
+    updateLastActivity(accountId);
+    return accountPages.get(accountId) || null;
+  }
+  updateLastActivity('global');
   return activePage;
 }
