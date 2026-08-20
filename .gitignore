@@ -52,10 +52,10 @@ launcher_config.json
 *.dmp
 crash_*/
 
-# Legacy
-/core/
+# Admin web (React/shadcn build)
+web/node_modules
+web/dist
 
-
+# Dodo workspace context
 resumo-de-trabalho.md
 _contexto-ia/
-

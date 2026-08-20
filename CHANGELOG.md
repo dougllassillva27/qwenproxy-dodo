@@ -1,3 +1,155 @@
+## [1.20.1](https://github.com/pedrofariasx/qwenproxy/compare/v1.20.0...v1.20.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* robust account header capture — specific input selector, guest-flow timing, retry cap ([5b3fd3e](https://github.com/pedrofariasx/qwenproxy/commit/5b3fd3eecb39aa12c8f4a83959044ab7c809e0c0))
+
+# [1.20.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.19.1...v1.20.0) (2026-08-11)
+
+
+### Features
+
+* dev mode with instant HMR and theme-aware admin logo ([41e5eff](https://github.com/pedrofariasx/qwenproxy/commit/41e5eff7830ee962cd3ee023dced446cc27c4cf3))
+
+## [1.19.1](https://github.com/pedrofariasx/qwenproxy/compare/v1.19.0...v1.19.1) (2026-08-11)
+
+
+### Bug Fixes
+
+* docker-compose port mapping, optional env file and robust healthcheck ([984a65c](https://github.com/pedrofariasx/qwenproxy/commit/984a65ca6737bab3647b0fc1206ad186767cc47c))
+
+# [1.19.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.18.1...v1.19.0) (2026-08-11)
+
+
+### Features
+
+* robust performance-focused env configuration with validated runtime switches ([4921783](https://github.com/pedrofariasx/qwenproxy/commit/492178329709342dbb542ce8fa3bc31279c0091c))
+
+## [1.18.1](https://github.com/pedrofariasx/qwenproxy/compare/v1.18.0...v1.18.1) (2026-08-11)
+
+
+### Bug Fixes
+
+* tool-loop session continuity and queue requests instead of failing when lanes are busy ([ba6b22b](https://github.com/pedrofariasx/qwenproxy/commit/ba6b22b8f66604cc2fbefe0c4c3bc86739fe17b7))
+
+# [1.18.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.17.1...v1.18.0) (2026-08-11)
+
+
+### Features
+
+* tool call robustness — malformed retry, id-to-name registry and log throttling ([a865ce6](https://github.com/pedrofariasx/qwenproxy/commit/a865ce685cf71633a14578457b15f238726c6dca))
+
+## [1.17.1](https://github.com/pedrofariasx/qwenproxy/compare/v1.17.0...v1.17.1) (2026-08-11)
+
+
+### Bug Fixes
+
+* tool call streaming corruption and add tool-call emission diagnostics ([84de0a5](https://github.com/pedrofariasx/qwenproxy/commit/84de0a52c7bf922bda8874bffbaf2eb88010471b))
+
+# [1.17.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.16.0...v1.17.0) (2026-08-11)
+
+
+### Features
+
+* accurate dashboard metrics, instant live settings, active-streams API and watchdog status ([da91508](https://github.com/pedrofariasx/qwenproxy/commit/da91508372ec7f725f4188d37f45ac306679399c))
+* admin light mode, streams page and dashboard functional fixes ([10adb78](https://github.com/pedrofariasx/qwenproxy/commit/10adb789fbd72694ad74108c67440512ea840265))
+
+# [1.16.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.15.0...v1.16.0) (2026-08-11)
+
+
+### Features
+
+* direct Node completion fast path with per-account circuit breaker; silence no-explicit-any lint ([5fb2b82](https://github.com/pedrofariasx/qwenproxy/commit/5fb2b820932fbfd67634eb9f65c6dcd6c68cd887))
+
+# [1.15.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.14.0...v1.15.0) (2026-08-11)
+
+
+### Bug Fixes
+
+* clear in-memory cooldown on admin clear-cooldown and expose lane readiness/cap ([c6b12d3](https://github.com/pedrofariasx/qwenproxy/commit/c6b12d3dc8da60f625607d701aaf4eaf4be003b2))
+
+
+### Features
+
+* add context tokenizer with model-aware truncation and expanded model/admin surfaces ([982dd2f](https://github.com/pedrofariasx/qwenproxy/commit/982dd2f2bd7168988a77a68ec4189adec3b7a5d2))
+
+# [1.14.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.13.2...v1.14.0) (2026-08-10)
+
+
+### Features
+
+* economical sessions for tool loops, usage/logs tracking and admin expansion ([9068bfd](https://github.com/pedrofariasx/qwenproxy/commit/9068bfdf762172a87cfe92b50e7aeceb8cb94ac8))
+
+## [1.13.2](https://github.com/pedrofariasx/qwenproxy/compare/v1.13.1...v1.13.2) (2026-08-10)
+
+
+### Bug Fixes
+
+* preserve economical mode context for tool workflows and harden admin/metrics surface ([328f7f4](https://github.com/pedrofariasx/qwenproxy/commit/328f7f4ec5f9e3cfd0d1c81c1af9e0c3a0cdf6fc))
+
+## [1.13.1](https://github.com/pedrofariasx/qwenproxy/compare/v1.13.0...v1.13.1) (2026-08-09)
+
+
+### Performance Improvements
+
+* batch session persistence, cache user keys and gate concurrency by memory ([8727a64](https://github.com/pedrofariasx/qwenproxy/commit/8727a64449ed6434caffeafedea201d7911d34bd))
+
+# [1.13.0](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.16...v1.13.0) (2026-08-09)
+
+
+### Features
+
+* add admin dashboard with hybrid sessions, multi-user auth and load-aware routing ([71297af](https://github.com/pedrofariasx/qwenproxy/commit/71297af104b6e8232ddb73333503d7a515d040bd))
+
+## [1.12.16](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.15...v1.12.16) (2026-07-21)
+
+
+### Bug Fixes
+
+* retry browser stream fetch with fresh headers when Qwen returns empty 200 OK response ([6a96194](https://github.com/pedrofariasx/qwenproxy/commit/6a961946ea3c481f82ff24ba27099b0ba379d8a0))
+
+## [1.12.15](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.14...v1.12.15) (2026-07-21)
+
+
+### Bug Fixes
+
+* wait for a free account lane instead of immediately rejecting when all lanes are busy ([02ad418](https://github.com/pedrofariasx/qwenproxy/commit/02ad4185b82a6c5189f2f4851580009589d6e7f7))
+
+## [1.12.14](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.13...v1.12.14) (2026-07-18)
+
+
+### Bug Fixes
+
+* correct ali-oss type import to resolve tsc error and consistent-type-imports lint error ([9ca87b0](https://github.com/pedrofariasx/qwenproxy/commit/9ca87b0d67db3fb8dd5295838844d24ba2a2abd6))
+
+
+### Performance Improvements
+
+* reduce streaming latency and speed up large-prompt handling ([357ec42](https://github.com/pedrofariasx/qwenproxy/commit/357ec427e5fce8645db4383e52d88329861f23c9))
+
+## [1.12.12](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.11...v1.12.12) (2026-07-18)
+
+
+### Bug Fixes
+
+* inline chunk-flush logic in page.evaluate to avoid esbuild __name helper reference in browser context ([6e2b666](https://github.com/pedrofariasx/qwenproxy/commit/6e2b666e67763a93ee6087f0786f928cfcef1f97))
+
+## [1.12.11](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.10...v1.12.11) (2026-07-18)
+
+
+### Performance Improvements
+
+* coalesce SSE chunks in browser before crossing CDP bridge to reduce streaming overhead ([3829f5f](https://github.com/pedrofariasx/qwenproxy/commit/3829f5f9b4d3ea7a4af835c932a0b81e4a28cea6))
+
+## [1.12.10](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.9...v1.12.10) (2026-07-18)
+
+
+### Bug Fixes
+
+* properly include uploaded file contents in chat context for better AI understanding of text files like chat history ([442c50e](https://github.com/pedrofariasx/qwenproxy/commit/442c50e687b035f3e08ee2b6d7b8dabde0215d42))
+* type catch variable in file content read error handling ([8304399](https://github.com/pedrofariasx/qwenproxy/commit/8304399b4e1f63f5b657541d10f79cc7add70cac))
+
 ## [1.12.9](https://github.com/pedrofariasx/qwenproxy/compare/v1.12.8...v1.12.9) (2026-07-03)
 
 

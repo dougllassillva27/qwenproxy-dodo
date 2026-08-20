@@ -1,22 +1,23 @@
 import { Hono } from 'hono'
-import { serve } from '@hono/node-server'
-import crypto from 'crypto'
+import type { Context } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
+import { serve, type ServerType } from '@hono/node-server'
 import { config } from '../core/config.js'
+import { sleep } from '../utils/sleep.js'
 import { metrics } from '../core/metrics.js'
 import { cache } from '../cache/memory-cache.js'
 import { Watchdog } from '../core/watchdog.js'
 import { app as modelsApp } from './models.js'
 import { chatCompletions, chatCompletionsStop } from '../routes/chat.js'
 import { uploadFile } from '../routes/upload.js'
+import { adminApp } from './admin.js'
 import { getBaseAccountId, makeAccountLaneId } from '../core/account-lanes.js'
 import { anthropicApp } from '../routes/anthropic/index.js'
 
 const app = new Hono()
 
 let watchdog: Watchdog
-let server: any
-
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+let server: ServerType | undefined
 
 function randomDelay(minMs: number, maxMs: number): number {
   const min = Math.max(0, Math.min(minMs, maxMs))
@@ -43,30 +44,51 @@ app.use('*', async (c, next) => {
   const duration = Date.now() - start
   metrics.histogram('latency.request', duration)
   c.header('X-Response-Time', `${duration}ms`)
+
+  // Accurate error accounting by status: every 4xx/5xx response is an error.
+  // (Previously only >=500 counted, so waves of 429/401 looked like "success".)
+  const status = c.res.status
+  if (status >= 500) {
+    metrics.increment('requests.errors')
+    metrics.increment('requests.5xx')
+  } else if (status >= 400) {
+    metrics.increment('requests.errors')
+    metrics.increment('requests.4xx')
+  }
 })
 
 app.use('/v1/*', async (c, next) => {
   const apiKey = process.env.API_KEY || config.apiKey
-  if (apiKey) {
+  const authRequired = config.authRequired || Boolean(apiKey)
+  if (authRequired) {
+    if (!apiKey) {
+      return c.json({ error: 'AUTH_REQUIRED=true but no API_KEY is configured' }, 500)
+    }
     const auth = c.req.header('Authorization')
     if (!auth?.startsWith('Bearer ')) {
       return c.json({ error: 'Missing or invalid Authorization header' }, 401)
     }
-    const token = auth.slice(7)
-    const tokenBuf = Buffer.from(token)
-    const keyBuf = Buffer.from(apiKey)
-    if (tokenBuf.length !== keyBuf.length || !crypto.timingSafeEqual(tokenBuf, keyBuf)) {
+    const { resolveUserFromAuthHeader } = await import('../core/user-manager.js')
+    const identity = resolveUserFromAuthHeader(auth)
+    if (!identity) {
       return c.json({ error: 'Invalid API key' }, 401)
     }
+    ;(c as any).set('user', identity)
   }
   await next()
 })
 
 app.route('', modelsApp)
 app.route('', anthropicApp)
-app.post('/v1/chat/completions', chatCompletions)
+app.post('/v1/chat/completions', bodyLimit({
+  maxSize: 52 * 1024 * 1024,
+  onError: (c: Context) => c.json({ error: { message: 'Request body too large' } }, 413),
+}), chatCompletions)
 app.post('/v1/chat/completions/stop', chatCompletionsStop)
 app.post('/v1/upload', uploadFile)
+
+// Admin dashboard (served at /admin).
+app.route('/admin', adminApp)
 
 app.get('/health', async (c) => {
   const status = await watchdog?.getStatus()
@@ -87,6 +109,7 @@ app.get('/metrics', (c) => {
 
 app.onError((err, c) => {
   metrics.increment('requests.errors')
+  metrics.increment('requests.5xx')
   console.error('API Error:', err)
   return c.json({ error: err.message }, 500)
 })
@@ -173,6 +196,8 @@ export async function startServer(): Promise<void> {
   watchdog.start()
 
   metrics.startCollection()
+  const { startTimeSeriesSampling, stopTimeSeriesSampling } = await import('../core/time-series.js')
+  startTimeSeriesSampling()
 
   server = serve({
     fetch: app.fetch,
@@ -187,13 +212,18 @@ export async function startServer(): Promise<void> {
     const { stopSessionKeeper } = await import('../services/session-keeper.js')
     stopSessionKeeper()
     watchdog.stop()
+    stopTimeSeriesSampling()
     metrics.stopCollection()
     await cache.close()
     const { closePlaywright } = await import('../services/playwright.js')
     await closePlaywright()
     const { closeDatabase } = await import('../core/database.js')
     closeDatabase()
-    server?.close()
+    await new Promise<void>(resolve => {
+      if (!server) return resolve()
+      server.close(() => resolve())
+      setTimeout(() => resolve(), 5000).unref()
+    })
     process.exit(0)
   }
 

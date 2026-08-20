@@ -50,6 +50,13 @@ export class MemoryCache {
     }
   }
 
+  private touch(key: string): void {
+    const entry = this.store.get(key)
+    if (!entry) return
+    this.store.delete(key)
+    this.store.set(key, entry)
+  }
+
   private startCleanup(): void {
     this.cleanupInterval = setInterval(() => {
       const now = Date.now()
@@ -59,6 +66,8 @@ export class MemoryCache {
         }
       }
     }, 60000)
+    // Background maintenance should not keep the process (or test runner) alive.
+    this.cleanupInterval.unref?.()
   }
 
   async connect(): Promise<void> {
@@ -90,6 +99,7 @@ export class MemoryCache {
   }
 
   async get<T>(key: CacheKey): Promise<T | null> {
+    const start = Date.now()
     const fullKey = this.prefix + key
     const entry = this.store.get(fullKey)
 
@@ -99,10 +109,13 @@ export class MemoryCache {
         this.store.delete(fullKey)
       }
       metrics.increment('cache.miss')
+      metrics.histogram('cache.get.latency', Date.now() - start)
       return null
     }
 
+    this.touch(fullKey)
     metrics.increment('cache.hit')
+    metrics.histogram('cache.get.latency', Date.now() - start)
     return entry.value as T
   }
 
@@ -148,6 +161,7 @@ export class MemoryCache {
     
     if (entry && entry.expiresAt > Date.now()) {
       current = typeof entry.value === 'number' ? entry.value : 0
+      this.totalBytes -= this.entryByteSize(fullKey, entry.value)
     }
     
     const newValue = current + by
@@ -157,6 +171,7 @@ export class MemoryCache {
       value: newValue,
       expiresAt: Date.now() + (effectiveTTL * 1000)
     })
+    this.totalBytes += this.entryByteSize(fullKey, newValue)
     
     return newValue
   }
@@ -186,10 +201,13 @@ export class MemoryCache {
     if (pattern) {
       const keys = await this.scan(pattern)
       for (const key of keys) {
+        const entry = this.store.get(key)
+        if (entry) this.totalBytes -= this.entryByteSize(key, entry.value)
         this.store.delete(key)
       }
     } else {
       this.store.clear()
+      this.totalBytes = 0
     }
     metrics.increment('cache.flushed')
   }

@@ -185,11 +185,11 @@ export async function browserStreamFetch(
           abortControllers.delete(reqId);
         };
 
-        page.evaluate(async ({ url, options, reqId }: any) => {
+        page.evaluate(async ({ url, options, reqId, evalTimeoutMs }: any) => {
           const controller = new AbortController();
           (window as any).__abortControllers = (window as any).__abortControllers || {};
           (window as any).__abortControllers[reqId] = controller;
-          const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs || config.timeouts.chat);
+          const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs || evalTimeoutMs);
           try {
             const resp = await fetch(url, {
               method: options.method || 'POST',
@@ -207,8 +207,9 @@ export async function browserStreamFetch(
               headers: respHeaders,
             });
 
-            if (!resp.ok || !resp.body) {
-              const bodyText = await resp.text();
+            const responseContentType = resp.headers.get('content-type') || '';
+            if (!resp.ok || !resp.body || !responseContentType.includes('text/event-stream')) {
+              const bodyText = await resp.text().catch(() => '');
               (window as any).__streamRelay(reqId, 'body', bodyText);
               delete (window as any).__abortControllers[reqId];
               return;
@@ -216,13 +217,47 @@ export async function browserStreamFetch(
 
             const reader = resp.body.getReader();
             const decoder = new TextDecoder();
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) {
-                (window as any).__streamRelay(reqId, 'end', null);
-                break;
+            // Coalesce chunks before crossing the CDP bridge. Each __streamRelay call
+            // is an expensive serialized round-trip; batching by time/size reduces
+            // bridge overhead. Thresholds tuned for LOW LATENCY: small byte budget +
+            // short interval flush ~2-3 SSE events at a time, and the very first chunk
+            // is flushed immediately for minimum first-token latency (TTFT).
+            // NOTE: keep this inline (no named functions) — code inside page.evaluate
+            // runs in the browser where esbuild's __name helper does not exist.
+            const FLUSH_BYTES = 512;
+            const FLUSH_INTERVAL_MS = 8;
+            let pending = '';
+            let flushTimer: any = null;
+            let firstChunkSent = false;
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+                  if (pending) { (window as any).__streamRelay(reqId, 'chunk', pending); pending = ''; }
+                  (window as any).__streamRelay(reqId, 'end', null);
+                  break;
+                }
+                pending += decoder.decode(value, { stream: true });
+                if (!firstChunkSent) {
+                  // Fast-path: flush the first byte(s) immediately to minimize TTFT.
+                  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+                  (window as any).__streamRelay(reqId, 'chunk', pending);
+                  pending = '';
+                  firstChunkSent = true;
+                } else if (pending.length >= FLUSH_BYTES) {
+                  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+                  (window as any).__streamRelay(reqId, 'chunk', pending);
+                  pending = '';
+                } else if (!flushTimer) {
+                  flushTimer = setTimeout(() => {
+                    flushTimer = null;
+                    if (pending) { (window as any).__streamRelay(reqId, 'chunk', pending); pending = ''; }
+                  }, FLUSH_INTERVAL_MS);
+                }
               }
-              (window as any).__streamRelay(reqId, 'chunk', decoder.decode(value, { stream: true }));
+            } finally {
+              if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
             }
             delete (window as any).__abortControllers[reqId];
           } catch (e: any) {
@@ -230,7 +265,7 @@ export async function browserStreamFetch(
             (window as any).__streamRelay(reqId, 'error', e.message);
             delete (window as any).__abortControllers[reqId];
           }
-        }, { url, options, reqId }).catch((e: any) => {
+        }, { url, options, reqId, evalTimeoutMs: metaTimeoutMs }).catch((e: any) => {
           const cb = streamCallbacks.get(reqId);
           if (cb) {
             cb.onError(e.message);

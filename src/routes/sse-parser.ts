@@ -19,8 +19,11 @@ export function getIncrementalDelta(oldStr: string, newStr: string, prevLength: 
   }
 
   if (newStr.length > prevLength && prevLength > 0) {
+    // Fast-path (O(1)): pure append. Qwen streams with incremental_output=true,
+    // so the vast majority of chunks are strict appends. Verify by comparing a
+    // short suffix window instead of scanning the whole accumulated content.
     const delta = newStr.slice(prevLength);
-    const checkLen = Math.min(64, prevLength);
+    const checkLen = Math.min(32, prevLength);
     const expectedSuffix = prevSuffix.slice(-checkLen);
     const actualSuffix = newStr.slice(prevLength - checkLen, prevLength);
 
@@ -61,7 +64,7 @@ export function getIncrementalDelta(oldStr: string, newStr: string, prevLength: 
     commonPrefixLen++;
   }
 
-  const threshold = Math.min(scanWindow, 32);
+  const threshold = Math.min(scanWindow, 4);
   if (commonPrefixLen >= threshold) {
     return {
       delta: newStr.substring(commonPrefixLen),
@@ -72,6 +75,10 @@ export function getIncrementalDelta(oldStr: string, newStr: string, prevLength: 
   }
 
   const combined = oldStr + newStr;
+  // Fallback keeps the CLIENT and the tracked content CONSISTENT: the delta
+  // emitted (newStr) is what the client accumulates, so matchedContent must
+  // equal oldStr+newStr (what the client ends up with). Tracking newStr here
+  // would desync the delta protocol on the rare rewrite path.
   return {
     delta: newStr,
     matchedContent: combined,

@@ -1,14 +1,12 @@
-import { getBasicHeaders, getPageForAccount } from './playwright.js';
+import { getBasicHeaders, waitForAccountPage } from './playwright.js';
 import { markAccountRateLimited } from '../core/account-manager.js';
 import { config } from '../core/config.js';
+import { getRuntimeInt } from '../core/runtime-config.js';
 import { QwenUpstreamError } from './error-handler.js';
 import type { Page } from 'playwright';
 import crypto from 'crypto';
-
-const CACHED_TIMEZONE = new Date().toString().split(' (')[0];
-const QWEN_WEB_VERSION = '0.2.66';
-
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+import { sleep } from '../utils/sleep.js';
+import { CACHED_TIMEZONE, QWEN_WEB_VERSION } from '../utils/qwen-constants.js';
 
 export interface WarmPoolEntry {
   chatId: string;
@@ -23,15 +21,17 @@ const inFlightWarmChats = new Set<string>();
 
 const refillPromises: Map<string, Promise<void>> = new Map();
 
-const WARM_POOL_SIZE = config.warmPool.size;
-const WARM_POOL_TTL_MS = config.warmPool.ttlMs;
-const WARM_POOL_LOW_WATER = config.warmPool.lowWater;
+// Read at call time so WARM_POOL_* can be tuned live from the admin dashboard
+// without restarting the server.
+const getPoolSize = () => getRuntimeInt('WARM_POOL_SIZE', config.warmPool.size);
+const getTtlMs = () => getRuntimeInt('WARM_POOL_TTL_MS', config.warmPool.ttlMs);
+const getLowWater = () => getRuntimeInt('WARM_POOL_LOW_WATER', config.warmPool.lowWater);
 
 function cleanupStalePool(accountId: string) {
   const pool = warmPool.get(accountId);
   if (!pool) return;
   const now = Date.now();
-  const filtered = pool.filter(e => now - e.timestamp <= WARM_POOL_TTL_MS);
+  const filtered = pool.filter(e => now - e.timestamp <= getTtlMs());
   if (filtered.length !== pool.length) warmPool.set(accountId, filtered);
 }
 
@@ -45,6 +45,17 @@ function markWarmChatInFlight(accountId: string, chatId: string) {
 
 export function releaseWarmChat(accountId: string, chatId: string) {
   inFlightWarmChats.delete(warmChatKey(accountId, chatId));
+}
+
+/** Per-account ready warm chat counts (used by the admin dashboard). */
+export function getWarmPoolStats(): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const [accountId, pool] of warmPool.entries()) {
+    const now = Date.now()
+    const ready = pool.filter(e => now - e.timestamp <= getTtlMs() && !isWarmChatInFlight(accountId, e.chatId)).length
+    if (ready > 0) out[accountId] = ready
+  }
+  return out
 }
 
 function isWarmChatInFlight(accountId: string, chatId: string) {
@@ -91,7 +102,7 @@ async function createRealQwenChat(header: Record<string, string>, accountId?: st
     return process.env.TEST_SESSION_ID || `mock-chat-${crypto.randomUUID()}`;
   }
 
-  const page = getPageForAccount(accountId);
+  const page = await waitForAccountPage(accountId, 15000);
   const body = JSON.stringify({
     title: 'Nova Conversa',
     models: ['qwen3.7-plus'],
@@ -101,10 +112,7 @@ async function createRealQwenChat(header: Record<string, string>, accountId?: st
     project_id: '',
   });
 
-  const pageUrl = page?.url() || '';
-  const isOnQwenOrigin = pageUrl.includes('chat.qwen.ai');
-
-  if (page && !page.isClosed() && isOnQwenOrigin) {
+  if (page) {
     try {
       const result = await browserJsonFetch<any>(page, 'https://chat.qwen.ai/api/v2/chats/new', {
         method: 'POST',
@@ -150,7 +158,7 @@ async function createRealQwenChat(header: Record<string, string>, accountId?: st
 async function fetchUnusedChats(headers: Record<string, string>, accountId?: string): Promise<string[]> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return [];
 
-  const page = getPageForAccount(accountId);
+  const page = await waitForAccountPage(accountId, 10000);
   const url = 'https://chat.qwen.ai/api/v2/chats/?page=1&exclude_project=true';
   const reqHeaders: Record<string, string> = {
     'accept': 'application/json, text/plain, */*',
@@ -160,7 +168,7 @@ async function fetchUnusedChats(headers: Record<string, string>, accountId?: str
   };
 
   let body = '';
-  if (page && !page.isClosed() && page.url().includes('chat.qwen.ai')) {
+  if (page) {
     try {
       const result = await browserJsonFetch<any>(page, url, {
         method: 'GET',
@@ -197,7 +205,7 @@ async function refillPoolForAccount(accountId: string) {
   let pool = warmPool.get(accountId);
   if (!pool) { pool = []; warmPool.set(accountId, pool); }
   cleanupStalePool(accountId);
-  const need = Math.max(0, WARM_POOL_SIZE - pool.length);
+  const need = Math.max(0, getPoolSize() - pool.length);
   if (need === 0) return;
 
   let headers: Record<string, string>;
@@ -254,7 +262,7 @@ async function refillPoolForAccount(accountId: string) {
 }
 
 export async function getWarmedChat(accountId?: string) {
-  if (WARM_POOL_SIZE <= 0) {
+  if (getPoolSize() <= 0) {
     const acctId = accountId === 'global' ? undefined : accountId;
     const headers = await getBasicQwenHeaders(acctId);
     const chatId = await createRealQwenChat(headers, acctId);
@@ -268,7 +276,7 @@ export async function getWarmedChat(accountId?: string) {
   if (!pool) { pool = []; warmPool.set(key, pool); }
   cleanupStalePool(key);
 
-  if (pool.length < WARM_POOL_LOW_WATER && !refillPromises.has(key)) {
+  if (pool.length < getLowWater() && !refillPromises.has(key)) {
     refillPromises.set(key, refillPoolForAccount(key).finally(() => refillPromises.delete(key)));
   }
 
@@ -292,6 +300,6 @@ export async function getWarmedChat(accountId?: string) {
 }
 
 export async function warmAllPools(accountIds: string[]) {
-  if (!config.warmPool.startup || WARM_POOL_SIZE <= 0) return;
+  if (!config.warmPool.startup || getPoolSize() <= 0) return;
   for (const id of accountIds) refillPoolForAccount(id).catch(() => {});
 }

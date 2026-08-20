@@ -6,9 +6,13 @@ import crypto from 'crypto';
 import type { QwenAccount } from '../core/accounts.js';
 import { config } from '../core/config.js';
 import { getBaseAccountId } from '../core/account-lanes.js';
+import { markAccountNotReady } from '../core/account-manager.js';
+import { getRuntimeInt, getRuntimeBool } from '../core/runtime-config.js';
 import { getStealthScript } from './stealth.js';
 import { getFingerprintProfile, type FingerprintProfile } from './fingerprint.js';
+import { sleep } from '../utils/sleep.js';
 
+export { sleep };
 export type BrowserType = 'chromium' | 'firefox' | 'webkit' | 'chrome' | 'edge';
 
 interface BrowserEngineConfig {
@@ -128,9 +132,16 @@ export const COOKIE_CACHE_TTL = 5 * 60 * 1000;
 export const REFRESH_THRESHOLD = 0.7;
 export const GUEST_HEADERS_TTL = 30 * 60 * 1000;
 
-export const PROFILES_DIR = path.resolve(config.browser.userDataDir);
+// Header TTL / background refresh are read at call time so they can be tuned
+// live from the admin dashboard without restarting the server.
+export function getHeadersTtlMs(): number {
+  return getRuntimeInt('HEADERS_TTL_MS', config.headers.ttlMs);
+}
+export function getBackgroundHeaderRefresh(): boolean {
+  return getRuntimeBool('BACKGROUND_HEADER_REFRESH', config.headers.backgroundRefresh);
+}
 
-export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+export const PROFILES_DIR = path.resolve(config.browser.userDataDir);
 
 export const accountContexts = new Map<string, BrowserContext>();
 export const accountPages = new Map<string, Page>();
@@ -309,18 +320,27 @@ export async function getOrLaunchBrowser(browserType: BrowserType = 'chromium'):
     ignoreDefaultArgs: ['--enable-automation', '--enable-blink-features'],
     args: launchArgs,
   });
-  browser.on('disconnected', () => { browser = null; });
+  browser.on('disconnected', () => {
+    browser = null;
+    accountContexts.clear();
+    accountPages.clear();
+    accountHeaderCaches.clear();
+    cookieCaches.clear();
+    cachedUserAgents.clear();
+    context = null;
+    activePage = null;
+    guestContext = null;
+    guestPage = null;
+    for (const id of [...accountPages.keys(), '_default', 'guest']) {
+      markAccountNotReady(id);
+    }
+  });
   return browser;
 }
 
 export class Mutex {
   private queue: (() => void)[] = [];
   private locked = false;
-  private onIdle?: () => void;
-
-  constructor(onIdle?: () => void) {
-    this.onIdle = onIdle;
-  }
 
   async acquire(): Promise<() => void> {
     if (!this.locked) {
@@ -340,7 +360,6 @@ export class Mutex {
       next();
     } else {
       this.locked = false;
-      this.onIdle?.();
     }
   }
 }
@@ -349,9 +368,7 @@ const uiMutexes = new Map<string, Mutex>();
 export function getUiMutex(accountId: string): Mutex {
   let m = uiMutexes.get(accountId);
   if (!m) {
-    m = new Mutex(() => {
-      uiMutexes.delete(accountId);
-    });
+    m = new Mutex();
     uiMutexes.set(accountId, m);
   }
   return m;
@@ -519,21 +536,19 @@ export async function resetBrowserProfile(cacheKey: string, accountId?: string):
       activePage = null;
     }
 
-    if (browser?.isConnected()) {
-      await browser.close();
-      browser = null;
-    }
-
+    // IMPORTANT: the shared browser and the OTHER accounts' contexts/pages must
+    // stay alive. This reset targets a single account (or the default/guest
+    // context) — closing the whole browser here kills every in-flight stream on
+    // every other account and forces a full cold restart, which is what this
+    // recovery path is trying to avoid.
     accountHeaderCaches.delete(cacheKey);
     cookieCaches.delete(cacheKey);
     cachedUserAgents.delete(cacheKey);
-    accountContexts.clear();
-    accountPages.clear();
-    context = null;
-    activePage = null;
-    guestContext = null;
-    guestPage = null;
-    guestHeadersCache = null;
+    if (accountId === 'guest') {
+      guestHeadersCache = null;
+    }
+    markAccountNotReady(accountId || cacheKey);
+    markAccountNotReady(profileId);
     fs.rmSync(profilePath, { recursive: true, force: true });
     fs.rmSync(storageStatePath(profileId), { force: true });
 
@@ -632,7 +647,6 @@ export async function initPlaywrightForAccount(account: QwenAccount, _headless =
   const acctPage = await acctContext.newPage();
   accountContexts.set(account.id, acctContext);
   accountPages.set(account.id, acctPage);
-
   accountLastActivity.set(account.id, Date.now());
 
   const hasAuth = await hasValidAuthCookie(acctPage);
@@ -714,10 +728,14 @@ export async function closePlaywrightForAccount(accountId: string) {
       await saveStorageState(acctContext, accountId);
     }
     await acctContext.close();
-    accountContexts.delete(accountId);
-    accountPages.delete(accountId);
-    accountLastActivity.delete(accountId);
   }
+  accountContexts.delete(accountId);
+  accountPages.delete(accountId);
+  accountHeaderCaches.delete(accountId);
+  cookieCaches.delete(accountId);
+  cachedUserAgents.delete(accountId);
+  accountLastActivity.delete(accountId);
+  markAccountNotReady(accountId);
 }
 
 export function getPageForAccount(accountId?: string): Page | null {
@@ -731,4 +749,37 @@ export function getPageForAccount(accountId?: string): Page | null {
   }
   updateLastActivity('global');
   return activePage;
+}
+
+/**
+ * Returns the account's page once it is actually on the chat.qwen.ai origin.
+ * A lane's page can transiently sit off-origin (mid-`goto`, `about:blank` while
+ * header interception is warming it, etc.); routing a chat request at that
+ * moment makes `createQwenStream` refuse with "Cannot fetch Qwen completion
+ * outside an active Qwen browser page". Wait briefly and — if possible — drive
+ * the existing page back to a stable Qwen page instead of failing immediately.
+ */
+export async function waitForAccountPage(accountId?: string, timeoutMs = 15000): Promise<Page | null> {
+  const deadline = Date.now() + timeoutMs;
+  let attemptedNavigation = false;
+
+  for (;;) {
+    const page = accountId === 'guest' ? guestPage : accountId ? accountPages.get(accountId) : activePage;
+    if (page && !page.isClosed()) {
+      if (page.url().includes('chat.qwen.ai')) {
+        return page;
+      }
+      if (!attemptedNavigation) {
+        attemptedNavigation = true;
+        page.goto('https://chat.qwen.ai/c/new-chat', {
+          waitUntil: 'domcontentloaded',
+          timeout: Math.min(15000, config.timeouts.navigation),
+        }).catch(() => { /* ignore navigation errors; polling continues */ });
+      }
+    }
+    if (Date.now() >= deadline) {
+      return null;
+    }
+    await sleep(250);
+  }
 }

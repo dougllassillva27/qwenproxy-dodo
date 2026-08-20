@@ -1,105 +1,95 @@
-/*
- * File: upload.ts
- * Project: qwenproxy
- * File upload handler - forwards files to Qwen's OSS storage
+/**
+ * File upload handler for Qwen
+ * Allows uploading images and documents to Qwen's OSS bucket for multimodal chat
  */
 
 import type { Context } from "hono";
+import type OSSType from "ali-oss";
 import { getQwenHeaders } from "../services/playwright.js";
+import { config } from "../core/config.js";
 import crypto from "crypto";
 import { Readable } from "stream";
 
 interface STSResponse {
   success: boolean;
-  request_id: string;
   data: {
     access_key_id: string;
     access_key_secret: string;
     security_token: string;
     file_url: string;
     file_path: string;
-    file_id: string;
     bucketname: string;
     region: string;
     endpoint: string;
+    file_id: string;
   };
 }
 
 /**
- * Get STS token from Qwen for file upload
- * Retries once with refreshed headers if 401/RateLimited
+ * Get STS (Security Token Service) token for OSS upload
  */
 async function getSTSToken(
   filename: string,
   filesize: number,
-  filetype: string,
+  filetype: string = "image",
   headers: Record<string, string>,
 ): Promise<STSResponse["data"]> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const response = await fetch(
-      "https://chat.qwen.ai/api/v2/files/getstsToken",
-      {
-        method: "POST",
-        headers: {
-          Accept: "application/json, text/plain, */*",
-          "Content-Type": "application/json",
-          Cookie: headers.cookie,
-          Origin: "https://chat.qwen.ai",
-          Referer: "https://chat.qwen.ai/",
-          "User-Agent": headers["user-agent"],
-          "X-Request-Id": crypto.randomUUID(),
-          "bx-ua": headers["bx-ua"],
-          "bx-umidtoken": headers["bx-umidtoken"],
-          "bx-v": headers["bx-v"],
-        },
-        body: JSON.stringify({ filename, filesize: String(filesize), filetype }),
-      },
-    );
+  const url = "https://chat.qwen.ai/api/v2/files/sts/token";
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => "");
-      // On 401, try refreshing headers once
-      if (response.status === 401 && attempt === 0) {
-        console.warn("[Upload] STS 401, refreshing headers and retrying...");
-        const refreshed = await refreshUploadHeaders();
-        if (refreshed) {
-          Object.assign(headers, refreshed);
-          continue;
-        }
-      }
-      throw new Error(
-        `STS token request failed: ${response.status} ${errorText.substring(0, 200)}`,
-      );
-    }
-
-    const data = await response.json();
-    if (!data.success || !data.data) {
-      // Check if it's a 401/RateLimited error inside the response body
-      const code = data.data?.code || data.code;
-      const details = data.data?.details || data.message || "";
-      if ((code === "RateLimited" && details.includes("401")) || details.includes("Unauthorized")) {
-        if (attempt === 0) {
-          console.warn("[Upload] STS returned 401 in body, refreshing headers and retrying...");
-          const refreshed = await refreshUploadHeaders();
-          if (refreshed) {
-            Object.assign(headers, refreshed);
-            continue;
-          }
-        }
-      }
-      throw new Error(
-        `STS token invalid: ${JSON.stringify(data).substring(0, 200)}`,
-      );
-    }
-
-    return data.data;
+  if (process.env.TEST_MOCK_PLAYWRIGHT) {
+    return {
+      access_key_id: "mock-ak",
+      access_key_secret: "mock-sk",
+      security_token: "mock-token",
+      file_url: "https://mock-oss.com/file.png?token=mock",
+      file_path: "files/mock-user/file.png",
+      bucketname: "mock-bucket",
+      region: "oss-cn-hangzhou",
+      endpoint: "oss-cn-hangzhou.aliyuncs.com",
+      file_id: "mock-file-id-12345",
+    };
   }
 
-  throw new Error("STS token request failed after retries");
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      accept: "application/json, text/plain, */*",
+      "sec-fetch-dest": "empty",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-site": "same-origin",
+      source: "web",
+      "x-request-id": crypto.randomUUID(),
+      cookie: headers.cookie || "",
+      "user-agent": headers["user-agent"] || "",
+      "bx-ua": headers["bx-ua"] || "",
+      "bx-umidtoken": headers["bx-umidtoken"] || "",
+      "bx-v": headers["bx-v"] || "2.5.36",
+    },
+    body: JSON.stringify({
+      filename,
+      filesize,
+      filetype,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Failed to get STS token: ${response.status} ${text}`);
+  }
+
+  const data = (await response.json()) as STSResponse;
+  if (!data.success || !data.data) {
+    throw new Error(
+      `STS token request failed: ${JSON.stringify(data)}`,
+    );
+  }
+
+  return data.data;
 }
 
 /**
- * Refresh upload headers by forcing a new Qwen headers intercept
+ * Helper to refresh Qwen headers if needed
  */
 async function refreshUploadHeaders(): Promise<Record<string, string> | null> {
   try {
@@ -117,6 +107,15 @@ async function refreshUploadHeaders(): Promise<Record<string, string> | null> {
     console.error("[Upload] Failed to refresh headers:", err.message);
   }
   return null;
+}
+
+// Cache the heavy ali-oss module so we import it once, not on every upload.
+let cachedOSSModule: typeof OSSType | null = null;
+async function getOSSModule() {
+  if (!cachedOSSModule) {
+    cachedOSSModule = (await import("ali-oss")).default;
+  }
+  return cachedOSSModule;
 }
 
 /**
@@ -143,7 +142,7 @@ async function uploadToOSSStream(
     return stsData.file_url.split("?")[0];
   }
 
-  const OSS = (await import("ali-oss")).default;
+  const OSS = await getOSSModule();
   const client = new OSS({
     region,
     accessKeyId: access_key_id,
@@ -340,7 +339,7 @@ export interface QwenFileEntry {
 }
 
 /**
- * Detect file type from URL or filename
+ * Map file extensions to Qwen upload types
  */
 function detectFileType(filename: string): {
   mime: string;
@@ -352,39 +351,57 @@ function detectFileType(filename: string): {
 
   const typeMap: Record<
     string,
-    { mime: string; showType: string; fileClass: string; qwenFileType: string }
+    {
+      mime: string;
+      showType: string;
+      fileClass: string;
+      qwenFileType: string;
+    }
   > = {
     // Images
     png: {
       mime: "image/png",
       showType: "image",
-      fileClass: "vision",
+      fileClass: "image",
       qwenFileType: "image",
     },
     jpg: {
       mime: "image/jpeg",
       showType: "image",
-      fileClass: "vision",
+      fileClass: "image",
       qwenFileType: "image",
     },
     jpeg: {
       mime: "image/jpeg",
       showType: "image",
-      fileClass: "vision",
+      fileClass: "image",
       qwenFileType: "image",
     },
     gif: {
       mime: "image/gif",
       showType: "image",
-      fileClass: "vision",
+      fileClass: "image",
       qwenFileType: "image",
     },
     webp: {
       mime: "image/webp",
       showType: "image",
-      fileClass: "vision",
+      fileClass: "image",
       qwenFileType: "image",
     },
+    bmp: {
+      mime: "image/bmp",
+      showType: "image",
+      fileClass: "image",
+      qwenFileType: "image",
+    },
+    svg: {
+      mime: "image/svg+xml",
+      showType: "image",
+      fileClass: "image",
+      qwenFileType: "image",
+    },
+
     // Video
     mp4: {
       mime: "video/mp4",
@@ -416,6 +433,19 @@ function detectFileType(filename: string): {
       fileClass: "video",
       qwenFileType: "video",
     },
+    flv: {
+      mime: "video/x-flv",
+      showType: "video",
+      fileClass: "video",
+      qwenFileType: "video",
+    },
+    wmv: {
+      mime: "video/x-ms-wmv",
+      showType: "video",
+      fileClass: "video",
+      qwenFileType: "video",
+    },
+
     // Audio
     mp3: {
       mime: "audio/mpeg",
@@ -453,6 +483,13 @@ function detectFileType(filename: string): {
       fileClass: "audio",
       qwenFileType: "audio",
     },
+    wma: {
+      mime: "audio/x-ms-wma",
+      showType: "audio",
+      fileClass: "audio",
+      qwenFileType: "audio",
+    },
+
     // Documents
     pdf: {
       mime: "application/pdf",
@@ -550,6 +587,17 @@ function detectFileType(filename: string): {
   );
 }
 
+const TEXT_DOC_EXTENSIONS = new Set([
+  'txt', 'log', 'md', 'markdown', 'csv', 'json', 'xml', 'yml', 'yaml', 'html', 'htm', 'ini', 'conf', 'env', 'py', 'js', 'ts', 'tsx', 'jsx', 'c', 'cpp', 'h', 'java', 'go', 'rs', 'sh', 'sql',
+]);
+
+function isTextDocument(filename: string, mime: string): boolean {
+  if (mime.startsWith('text/')) return true;
+  if (mime === 'application/json' || mime === 'application/xml' || mime === 'application/javascript') return true;
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  return TEXT_DOC_EXTENSIONS.has(ext);
+}
+
 /**
  * Process OpenAI-style image/video content into Qwen file format
  */
@@ -563,9 +611,10 @@ export async function processImagesForQwen(
     file_url?: { url: string };
   }>,
   headers: Record<string, string>,
-): Promise<{ text: string; files: QwenFileEntry[] }> {
+): Promise<{ text: string; files: QwenFileEntry[]; docText: string }> {
   const textParts: string[] = [];
   const files: QwenFileEntry[] = [];
+  const docTexts: string[] = [];
 
   for (const part of content) {
     if (part.type === "text" && part.text) {
@@ -588,6 +637,7 @@ export async function processImagesForQwen(
       let filename = "";
       let fileSize = 0;
       let fileId = "";
+      let fileBuffer: Buffer | null = null;
 
       if (mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://")) {
         try {
@@ -597,6 +647,7 @@ export async function processImagesForQwen(
             continue;
           }
           const buffer = Buffer.from(await downloadRes.arrayBuffer());
+          fileBuffer = buffer;
           fileSize = buffer.length;
           filename = mediaUrl.split("/").pop()?.split("?")[0] || "file.bin";
           if (!filename.includes(".")) {
@@ -652,6 +703,7 @@ export async function processImagesForQwen(
             (isVideoData ? "mp4" : isAudioData ? "mp3" : "png");
           const base64Data = mediaUrl.split(",")[1];
           const buffer = Buffer.from(base64Data, "base64");
+          fileBuffer = buffer;
           filename = `${isVideoData ? "video" : isAudioData ? "audio" : "file"}_${Date.now()}.${detectedExt}`;
           fileSize = buffer.length;
           const typeInfo = detectFileType(filename);
@@ -671,6 +723,14 @@ export async function processImagesForQwen(
 
       if (fileUrl) {
         const typeInfo = detectFileType(filename);
+        if (isTextDocument(filename, typeInfo.mime) && fileBuffer) {
+          // Text documents are inlined into the prompt so the model reliably sees
+          // their content. Attaching them as `files` and letting Qwen read them
+          // is unreliable and produces terse/degenerate replies.
+          const docText = fileBuffer.toString("utf-8");
+          docTexts.push(`[File: ${filename}]\n${docText}`);
+          continue;
+        }
         files.push({
           type: typeInfo.showType,
           file: {
@@ -711,10 +771,10 @@ export async function processImagesForQwen(
     }
   }
 
-  return { text: textParts.join("\n"), files };
+  return { text: textParts.join("\n"), files, docText: docTexts.join("\n\n---\n\n") };
 }
 
-const LARGE_PROMPT_THRESHOLD = 131072;
+const LARGE_PROMPT_THRESHOLD = config.largePromptThreshold;
 
 export async function uploadLargePromptAsFile(
   promptText: string,

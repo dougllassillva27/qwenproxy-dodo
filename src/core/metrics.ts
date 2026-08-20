@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import os from 'os'
 import { config } from './config.js'
 
 interface MetricPoint {
@@ -30,17 +31,26 @@ export class Metrics extends EventEmitter {
   private registerDefaults(): void {
     const defaults: Array<[string, MetricType, string]> = [
       ['requests.total', 'counter', 'Total requests processed'],
-      ['requests.errors', 'counter', 'Total request errors'],
+      ['requests.errors', 'counter', 'Requests answered with 4xx/5xx status'],
+      ['requests.4xx', 'counter', 'Requests answered with 4xx status'],
+      ['requests.5xx', 'counter', 'Requests answered with 5xx status'],
+      ['requests.completions', 'counter', 'Chat completions requests'],
       ['latency.request', 'histogram', 'Request latency (ms)'],
+      ['latency.completion', 'histogram', 'Completion latency to response start (ms)'],
       ['streams.active', 'gauge', 'Active SSE streams'],
+      ['streams.by.account', 'gauge', 'Active SSE streams per account'],
       ['streams.errors', 'counter', 'Stream errors'],
+      ['toolcalls.malformed', 'counter', 'Malformed tool call blocks dropped by the parser'],
       ['memory.heap.used', 'gauge', 'Heap memory used (bytes)'],
       ['memory.heap.total', 'gauge', 'Heap memory total (bytes)'],
+      ['memory.rss', 'gauge', 'Resident set size (bytes) — real memory footprint'],
+      ['memory.system.total', 'gauge', 'Total system memory (bytes)'],
       ['cache.set', 'counter', 'Cache set operations'],
       ['cache.hit', 'counter', 'Cache hits'],
       ['cache.miss', 'counter', 'Cache misses'],
       ['cache.deleted', 'counter', 'Cache deletions'],
       ['cache.flushed', 'counter', 'Cache flushes'],
+      ['cache.evicted', 'counter', 'Cache evictions'],
       ['cache.value.size', 'histogram', 'Cache value size (bytes)'],
       ['cache.get.latency', 'histogram', 'Cache get latency (ms)'],
       ['watchdog.ram.status', 'gauge', 'Watchdog RAM status (0=ok, 1=warning, 2=critical)'],
@@ -119,6 +129,8 @@ export class Metrics extends EventEmitter {
     const mem = process.memoryUsage()
     this.gauge('memory.heap.used', mem.heapUsed)
     this.gauge('memory.heap.total', mem.heapTotal)
+    this.gauge('memory.rss', mem.rss)
+    this.gauge('memory.system.total', os.totalmem())
   }
 
   setExportCallback(callback: (metrics: Map<string, MetricDefinition>) => void): void {
@@ -146,7 +158,27 @@ export class Metrics extends EventEmitter {
         const labelsStr = point.labels
           ? `{${Object.entries(point.labels).map(([k, v]) => `${k}="${v}"`).join(',')}}`
           : ''
-        output += `${metric.name}${labelsStr} ${point.value} ${point.timestamp}\n`
+
+        if (metric.type === 'histogram' && typeof point.value === 'object' && point.value !== null) {
+          const data = point.value as { count: number; sum: number; buckets: Map<number, number> }
+          const buckets = metric.histogramBuckets || []
+          let cumulative = 0
+          for (const bucket of buckets) {
+            cumulative += data.buckets.get(bucket) || 0
+            const bucketLabels = point.labels
+              ? `{${Object.entries(point.labels).map(([k, v]) => `${k}="${v}"`).join(',')},le="${bucket}"}`
+              : `{le="${bucket}"}`
+            output += `${metric.name}_bucket${bucketLabels} ${cumulative}\n`
+          }
+          const infLabels = point.labels
+            ? `{${Object.entries(point.labels).map(([k, v]) => `${k}="${v}"`).join(',')},le="+Inf"}`
+            : '{le="+Inf"}'
+          output += `${metric.name}_bucket${infLabels} ${data.count}\n`
+          output += `${metric.name}_sum${labelsStr} ${data.sum}\n`
+          output += `${metric.name}_count${labelsStr} ${data.count}\n`
+        } else {
+          output += `${metric.name}${labelsStr} ${point.value} ${point.timestamp}\n`
+        }
       }
     }
     return output
