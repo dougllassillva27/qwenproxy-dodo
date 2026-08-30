@@ -4,6 +4,7 @@ import { StreamingToolParser } from '../tools/parser.js';
 import { QwenStreamParser } from '../utils/qwen-stream-parser.js';
 import { getIncrementalDelta, parseQwenErrorPayload } from './sse-parser.js';
 import { looksLikeUnwrappedToolCall, parseUnwrappedToolCalls } from './tool-handler.js';
+import { textContainsToolCallStart } from '../tools/toolcall-tags.js';
 import { isDegenerateAnswer } from '../utils/degenerate-answer.js';
 import { removeStream } from '../core/stream-registry.js';
 import { recordToolCall } from '../core/tool-call-debug.js';
@@ -352,7 +353,7 @@ export function handleStreamingResponse(c: Context, ctx: StreamHandlerContext): 
               } else {
                 if (ctx.hasTools && toolParser) {
                   const { text, toolCalls } = toolParser.feed(vStr);
-                  if (toolParser.isInsideTool() || vStr.toLowerCase().includes('<tool_call')) {
+                  if (toolParser.isInsideTool() || textContainsToolCallStart(vStr)) {
                     sawToolCallSignal = true;
                   }
                   if (text) {

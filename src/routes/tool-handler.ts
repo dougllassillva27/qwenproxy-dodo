@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { robustParseJSON } from '../utils/json.js';
+import { TOOL_CALL_OPEN, TOOL_CALL_CLOSE } from '../tools/toolcall-tags.js';
 import type { FunctionToolDefinition } from '../tools/types.js';
 import type { Message } from '../utils/types.js';
 
@@ -256,9 +257,9 @@ Available tool names: ${toolList}
 ${fileMutationLine}
 Format:
 
-<tool_call>
+${TOOL_CALL_OPEN}
 {"name": "tool_name", "arguments": {"param_name": "value"}}
-<` + `/tool_call>
+${TOOL_CALL_CLOSE}
 
 Rules:
 1. Use the exact tool name as provided by the client. Tool names vary by editor/integration; do not require names like read_file, edit_file, write_file, or apply_patch to exist.
@@ -267,8 +268,8 @@ Rules:
 4. ${forcedLine}
 5. ${parallelLine}
 6. If no tool is needed, do not emit any tool call block.
-7. Put only valid JSON inside each <tool_call> block. No markdown fences, comments, or explanatory text inside the block.
-8. If you emit a tool call, stop after the closing </tool_call> tag and wait for the tool response.`;
+7. Put only valid JSON inside each ${TOOL_CALL_OPEN} block. No markdown fences, comments, or explanatory text inside the block.
+8. If you emit a tool call, stop after the closing ${TOOL_CALL_CLOSE} tag and wait for the tool response.`;
   if (contractCache.size >= CACHE_MAX_ENTRIES) contractCache.clear();
   contractCache.set(cacheKey, result);
   return result;

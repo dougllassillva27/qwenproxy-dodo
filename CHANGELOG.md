@@ -1,3 +1,10 @@
+## [1.20.2](https://github.com/pedrofariasx/qwenproxy/compare/v1.20.1...v1.20.2) (2026-08-30)
+
+
+### Bug Fixes
+
+* use qwenproxy-private tool-call marker to dodge provider <tool_call> blocking ([e96ca0f](https://github.com/pedrofariasx/qwenproxy/commit/e96ca0f844c58fec475eb402bcb27a78c714d3f8))
+
 ## [1.20.1](https://github.com/pedrofariasx/qwenproxy/compare/v1.20.0...v1.20.1) (2026-08-16)
 
 
