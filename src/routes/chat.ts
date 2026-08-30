@@ -37,6 +37,7 @@ import { handleStreamingResponse, collectNonStreamingResult } from './stream-han
 import { buildAnswerDirective } from '../utils/degenerate-answer.js';
 import { checkUserRateLimit, tryAcquireUserSlot, releaseUserSlot, getUserActiveStreams } from '../core/user-manager.js';
 import { getRuntimeBool } from '../core/runtime-config.js';
+import { TOOL_CALL_OPEN, TOOL_CALL_CLOSE, wrapToolCallPayload } from '../tools/toolcall-tags.js';
 import type { UserIdentity } from '../core/user-manager.js';
 import { trackUsage, trackModelUsage } from '../core/usage-tracker.js';
 
@@ -260,9 +261,9 @@ export async function chatCompletions(c: Context) {
              } else if (args && typeof args === 'object') {
                parsedArgs = args;
              }
-             const payload = { name: tc.function?.name, arguments: parsedArgs };
-             const toolCallStr = `\n<tool_call>\n${JSON.stringify(payload)}\n</tool_call>`;
-             assistantContent = assistantContent ? assistantContent + toolCallStr : toolCallStr.trim();
+              const payload = { name: tc.function?.name, arguments: parsedArgs };
+              const toolCallStr = wrapToolCallPayload(JSON.stringify(payload));
+              assistantContent = assistantContent ? assistantContent + '\n' + toolCallStr : toolCallStr;
            }
         }
         promptParts.push(`Assistant: ${assistantContent.trim()}\n`);
@@ -314,7 +315,7 @@ export async function chatCompletions(c: Context) {
       });
       const toolsJson = JSON.stringify(formattedTools);
       
-      systemPrompt += `\n\n# TOOLS AVAILABLE\nYou have access to the following tools:\n${toolsJson}\n\n# TOOL CALLING FORMAT (MANDATORY)\nTo use a tool, you MUST output a JSON object wrapped EXACTLY in <tool_call> tags:\n\n<tool_call>\n{"name": "tool_name", "arguments": {"param_name": "value"}}\n</tool_call>\n\nEXAMPLE OF MULTIPLE TOOL CALLS:\n<tool_call>\n{"name": "read_file", "arguments": {"path": "file1.txt"}}\n</tool_call>\n<tool_call>\n{"name": "read_file", "arguments": {"path": "file2.txt"}}\n</tool_call>\n\nCRITICAL RULES:\n1. ONLY use the tags above for tool calling. NEVER output raw JSON without tags.\n2. You can call multiple tools by outputting multiple <tool_call> blocks consecutively.\n3. Do NOT output any other text (explanations, chat, etc.) after your <tool_call> blocks. Wait for the user to provide the tool response.\n4. The JSON inside the tags MUST be valid and include ALL required braces and the "arguments" field.\n5. If you need to use a tool, do it IMMEDIATELY without preamble.\n6. NEVER invent, guess, or hallucinate tool names. You MUST ONLY use the exact tool names provided in the 'TOOLS AVAILABLE' list above. Calling an unlisted tool will result in a hard execution error.\n\n`;
+      systemPrompt += `\n\n# TOOLS AVAILABLE\nYou have access to the following tools:\n${toolsJson}\n\n# TOOL CALLING FORMAT (MANDATORY)\nTo use a tool, you MUST output a JSON object wrapped EXACTLY in ${TOOL_CALL_OPEN} ... ${TOOL_CALL_CLOSE} tags:\n\n${TOOL_CALL_OPEN}\n{"name": "tool_name", "arguments": {"param_name": "value"}}\n${TOOL_CALL_CLOSE}\n\nEXAMPLE OF MULTIPLE TOOL CALLS:\n${TOOL_CALL_OPEN}\n{"name": "read_file", "arguments": {"path": "file1.txt"}}\n${TOOL_CALL_CLOSE}\n${TOOL_CALL_OPEN}\n{"name": "read_file", "arguments": {"path": "file2.txt"}}\n${TOOL_CALL_CLOSE}\n\nCRITICAL RULES:\n1. ONLY use the tags above for tool calling. NEVER output raw JSON without tags.\n2. You can call multiple tools by outputting multiple ${TOOL_CALL_OPEN} blocks consecutively.\n3. Do NOT output any other text (explanations, chat, etc.) after your ${TOOL_CALL_OPEN} blocks. Wait for the user to provide the tool response.\n4. The JSON inside the tags MUST be valid and include ALL required braces and the "arguments" field.\n5. If you need to use a tool, do it IMMEDIATELY without preamble.\n6. NEVER invent, guess, or hallucinate tool names. You MUST ONLY use the exact tool names provided in the 'TOOLS AVAILABLE' list above. Calling an unlisted tool will result in a hard execution error.\n\n`;
       
       if (bodyAny.tool_choice && typeof bodyAny.tool_choice === 'object' && bodyAny.tool_choice.function) {
         const forcedTool = bodyAny.tool_choice.function.name;
@@ -688,7 +689,7 @@ export async function chatCompletions(c: Context) {
         },
         onToolCallRetry: hasToolConversation ? async () => {
           console.warn('[Chat] Tool call attempted but unparseable. Regenerating with corrective directive...');
-          const corrected = `${finalPrompt}\nIMPORTANT: Your previous tool call was malformed and could not be parsed. If a tool is needed, emit ONE valid JSON object wrapped EXACTLY in <tool_call> and </tool_call> tags, nothing else.`;
+          const corrected = `${finalPrompt}\nIMPORTANT: Your previous tool call was malformed and could not be parsed. If a tool is needed, emit ONE valid JSON object wrapped EXACTLY in ${TOOL_CALL_OPEN} and ${TOOL_CALL_CLOSE} tags, nothing else.`;
           const retried = await obtainStream(corrected, true);
           return { stream: retried.stream, uiSessionId: retried.uiSessionId };
         } : undefined,

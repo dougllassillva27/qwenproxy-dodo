@@ -188,6 +188,59 @@ test('StreamingToolParser: parses OpenAI-style tool_calls wrapper', () => {
   assert.deepStrictEqual(res.toolCalls[0].arguments, { query: 'abc' });
 });
 
+test('StreamingToolParser: tolerates whitespace in close tags and stray extra close', () => {
+  const parser = new StreamingToolParser();
+  const input = `<tool_call >
+{"name": "read", "arguments": {"filePath": "/x"}}
+</tool_call >
+<tool_call >
+{"name": "glob", "arguments": {"pattern": "**/*"}}
+</tool_call >
+</tool_call >`;
+  const res = parser.feed(input);
+  parser.flush();
+  assert.strictEqual(res.toolCalls.length, 2, 'both tool calls must be recovered');
+  assert.strictEqual(res.toolCalls[0].name, 'read');
+  assert.strictEqual(res.toolCalls[1].name, 'glob');
+  assert.strictEqual(res.text, '', 'stray close tags must not leak into text');
+});
+
+test('StreamingToolParser: tolerates whitespace-only close tag', () => {
+  const parser = new StreamingToolParser();
+  const res = parser.feed(`<tool_call >{"name":"test","arguments":{}}</tool_call >`);
+  parser.flush();
+  assert.strictEqual(res.toolCalls.length, 1);
+  assert.strictEqual(res.toolCalls[0].name, 'test');
+  assert.strictEqual(res.text, '');
+});
+
+test('StreamingToolParser: parses the qwenproxy-private qpx_call marker', () => {
+  const parser = new StreamingToolParser();
+  const res = parser.feed('<qpx_call>{"name":"read","arguments":{"path":"/x"}}</qpx_call>');
+  parser.flush();
+  assert.strictEqual(res.toolCalls.length, 1);
+  assert.strictEqual(res.toolCalls[0].name, 'read');
+  assert.deepStrictEqual(res.toolCalls[0].arguments, { path: '/x' });
+  assert.strictEqual(res.text, '');
+});
+
+test('StreamingToolParser: qpx_call tolerates whitespace in close and stray extra close (provider mangling)', () => {
+  const parser = new StreamingToolParser();
+  const input = `<qpx_call >
+{"name": "read", "arguments": {"filePath": "/x"}}
+</qpx_call >
+<qpx_call >
+{"name": "glob", "arguments": {"pattern": "**/*"}}
+</qpx_call >
+</qpx_call >`;
+  const res = parser.feed(input);
+  parser.flush();
+  assert.strictEqual(res.toolCalls.length, 2, 'both tool calls must be recovered');
+  assert.strictEqual(res.toolCalls[0].name, 'read');
+  assert.strictEqual(res.toolCalls[1].name, 'glob');
+  assert.strictEqual(res.text, '', 'stray close tags must not leak into text');
+});
+
 test('StreamingToolParser: handles truncated close tag before environment details', () => {
   const parser = new StreamingToolParser();
   const input = `${TC_OPEN}{"name":"edit","arguments":{"path":"a.txt","content":"hello"}}</tool<environment_details>

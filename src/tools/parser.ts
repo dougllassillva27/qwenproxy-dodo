@@ -11,6 +11,15 @@ import { logger } from '../core/logger.js';
 import { metrics } from '../core/metrics.js';
 import type { ParsedToolCall } from './types';
 import type { FunctionToolDefinition } from './types';
+import {
+  TOOL_CALL_OPEN,
+  closeTagFor,
+  findToolOpen,
+  getCloseNames,
+  getOpenNames,
+  matchToolCloseAt,
+  openTagName,
+} from './toolcall-tags.js';
 
 // Throttled logging for noisy-but-benign conditions (model echoing source files
 // that contain <tool_call> literals, truncated blocks, etc.). Full log entries
@@ -35,10 +44,6 @@ export interface ParserResult {
 
 // ─── XML Helpers ───────────────────────────────────────────────────────────────
 
-const TOOL_OPEN_RE = /<tool_call\b[^>]*>/i;
-const TOOL_END = '</tool_call>';
-const TOOL_SHORT_END = '</tool>';
-
 function decodeXmlEntities(value: string): string {
   return value
     .replace(/&quot;/g, '"')
@@ -46,6 +51,26 @@ function decodeXmlEntities(value: string): string {
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&amp;/g, '&');
+}
+
+// Strips leading/trailing stray `</tool_call >` / `</tool >` / `</qpx_call >`
+// fragments the provider sometimes injects (e.g. an extra close after the real
+// one). Applied to any text we emit so these artifacts never leak into the
+// assistant reply.
+function stripLeadingStrayCloses(s: string): string {
+  const re = /^\s*<\/tool_call\s*>|^\s*<\/tool\s*>|^\s*<\/qpx_call\s*>/i;
+  let m: RegExpMatchArray | null;
+  while ((m = s.match(re))) s = s.substring(m[0].length);
+  return s;
+}
+function stripTrailingStrayCloses(s: string): string {
+  const re = /<\/tool_call\s*>\s*$|<\/tool\s*>\s*$|<\/qpx_call\s*>\s*$/i;
+  let m: RegExpMatchArray | null;
+  while ((m = s.match(re))) s = s.substring(0, s.length - m[0].length);
+  return s;
+}
+function sanitizeStrayCloses(s: string): string {
+  return stripTrailingStrayCloses(stripLeadingStrayCloses(s));
 }
 
 function unescapeDoubleEscaped(content: string): string {
@@ -132,7 +157,8 @@ function coerceParameterValue(rawValue: string): unknown {
  */
 function extractToolName(openTag: string, block: string): string {
   const combined = `${openTag}\n${block}`;
-  const attrMatch = combined.match(/<tool_call\b[^>]*\bname\s*=\s*["']([^"']+)["']/i);
+  const name = openTagName(openTag);
+  const attrMatch = combined.match(new RegExp(`<${name}\\b[^>]*\\bname\\s*=\\s*["']([^"']+)["']`, 'i'));
   if (attrMatch) return attrMatch[1];
 
   const nameTagMatch = block.match(/<name>([\s\S]*?)<\/name>/i);
@@ -244,12 +270,13 @@ function findToolEndMatch(buffer: string): { index: number; length: number } | n
     if (ch === '"') { inString = !inString; continue; }
     if (inString || ch !== '<') continue;
 
-    if (matchesCaseInsensitiveAt(buffer, i, TOOL_END)) {
-      return { index: i, length: TOOL_END.length };
-    }
-
-    if (matchesCaseInsensitiveAt(buffer, i, TOOL_SHORT_END)) {
-      return { index: i, length: TOOL_SHORT_END.length };
+    // Whitespace-tolerant close over every accepted tag (custom + legacy). The
+    // provider sometimes inserts a space before `>`, and may emit the legacy
+    // `</tool_call >`. Scanned outside JSON strings to avoid matching literal
+    // close tags embedded in arguments.
+    const closeLen = matchToolCloseAt(buffer, i);
+    if (closeLen !== null) {
+      return { index: i, length: closeLen };
     }
 
     // Some editor clients append environment metadata immediately after a model
@@ -276,8 +303,9 @@ function findToolEndMatch(buffer: string): { index: number; length: number } | n
 }
 
 function findRecoverableTailEndMatch(buffer: string): { index: number; length: number } | null {
-  for (const tag of [TOOL_END, TOOL_SHORT_END]) {
-    const index = buffer.toLowerCase().lastIndexOf(tag);
+  for (const name of getCloseNames()) {
+    const tag = `</${name}>`;
+    const index = buffer.toLowerCase().lastIndexOf(tag.toLowerCase());
     if (index !== -1 && index + tag.length === buffer.length) {
       return { index, length: tag.length };
     }
@@ -297,40 +325,34 @@ function startsWithEnvironmentDetails(buffer: string): boolean {
 
 // ─── Partial Tag Detection ─────────────────────────────────────────────────────
 
-const TOOL_START_LITERAL = '<tool_call>';
+const TOOL_START_LITERAL = TOOL_CALL_OPEN;
 
 function findPartialToolOpenIndex(buffer: string): number {
-  const prefix = '<tool_call';
-  const prefixLen = prefix.length;
   const bufLen = buffer.length;
+  const openNames = getOpenNames();
 
-  let lastPartialIdx = -1;
-  for (let i = bufLen - 1; i >= Math.max(0, bufLen - prefixLen - 1); i--) {
+  // Hold back a trailing `<` that is a prefix of some open tag with no `>` after
+  // it (a chunk boundary split the tag). We check every accepted open name.
+  for (let i = bufLen - 1; i >= 0; i--) {
     if (buffer[i] !== '<') continue;
-    let match = true;
-    for (let j = 1; j < prefixLen && i + j < bufLen; j++) {
-      const c = buffer.charCodeAt(i + j);
-      const t = prefix.charCodeAt(j);
-      if (c !== t && ((c | 0x20) !== (t | 0x20))) { match = false; break; }
+    const tail = buffer.substring(i);
+    if (tail.includes('>')) continue; // completed/closed tag — not a partial
+    let isPrefix = false;
+    for (const name of openNames) {
+      const full = `<${name}`;
+      if (full.startsWith(tail) || tail.startsWith(full)) {
+        isPrefix = true;
+        break;
+      }
     }
-    if (match) {
-      lastPartialIdx = i;
-      break;
-    }
+    if (isPrefix) return i;
   }
-  if (lastPartialIdx !== -1 && buffer.indexOf('>', lastPartialIdx) === -1) return lastPartialIdx;
 
-  for (let i = 1; i < TOOL_START_LITERAL.length; i++) {
-    const sub = TOOL_START_LITERAL.substring(0, i);
-    const subLen = sub.length;
-    if (bufLen < subLen) continue;
-    let match = true;
-    for (let j = 0; j < subLen; j++) {
-      const c = buffer.charCodeAt(bufLen - subLen + j);
-      const t = sub.charCodeAt(j);
-      if (c !== t && (c | 0x20) !== (t | 0x20)) { match = false; break; }
-    }
-    if (match) return bufLen - i;
+  // Fallback for a `<` followed by partial name chars that don't yet match a full
+  // open tag (e.g. chunk ends with `<qpx`). Only hold when there is no `>` ahead.
+  const m = buffer.slice(Math.max(0, bufLen - 40)).match(/<[a-zA-Z_][\w-]*$/);
+  if (m && m.index !== undefined && buffer.indexOf('>', bufLen - 40 + m.index) === -1) {
+    return bufLen - 40 + m.index;
   }
   return -1;
 }
@@ -366,25 +388,25 @@ export class StreamingToolParser {
     while (this.buffer.length > 0) {
       if (!this.insideTool) {
         if (this.buffer.indexOf('<') === -1) {
-          if (this.emittedToolCallCount === 0) result.text += this.buffer;
+          if (this.emittedToolCallCount === 0) result.text += sanitizeStrayCloses(this.buffer);
           this.buffer = '';
           break;
         }
-        const match = this.buffer.match(TOOL_OPEN_RE);
-        if (match && match.index !== undefined) {
+        const match = findToolOpen(this.buffer);
+        if (match) {
           // Text before the tool call tag
-          const textBefore = this.buffer.substring(0, match.index);
+          const textBefore = sanitizeStrayCloses(this.buffer.substring(0, match.index));
           result.text += textBefore;
           this.insideTool = true;
-          this.currentOpenTag = match[0];
-          this.buffer = this.buffer.substring(match.index + match[0].length);
+          this.currentOpenTag = match.tag;
+          this.buffer = this.buffer.substring(match.index + match.length);
           continue;
         } else {
           // No full open tag found. Check for partial at end.
           const partialIdx = findPartialToolOpenIndex(this.buffer);
           const flushIndex = partialIdx === -1 ? this.buffer.length : partialIdx;
           if (flushIndex > 0) {
-            const textToEmit = this.buffer.substring(0, flushIndex);
+             const textToEmit = sanitizeStrayCloses(this.buffer.substring(0, flushIndex));
             // Only emit as content if no tool calls have been emitted yet
             if (this.emittedToolCallCount === 0) {
               result.text += textToEmit;
@@ -406,16 +428,18 @@ export class StreamingToolParser {
             break;
           }
           if (this.buffer.length > 0) {
-            const nextMatch = this.buffer.match(TOOL_OPEN_RE);
-            if (nextMatch && nextMatch.index !== undefined) {
-              result.text += this.buffer.substring(0, nextMatch.index);
+            const nextMatch = findToolOpen(this.buffer);
+            if (nextMatch) {
+              const lead = sanitizeStrayCloses(this.buffer.substring(0, nextMatch.index));
+              if (lead.trim().length > 0) result.text += lead;
               this.insideTool = true;
-              this.currentOpenTag = nextMatch[0];
-              this.buffer = this.buffer.substring(nextMatch.index + nextMatch[0].length);
+              this.currentOpenTag = nextMatch.tag;
+              this.buffer = this.buffer.substring(nextMatch.index + nextMatch.length);
             } else {
               const partialIdx = findPartialToolOpenIndex(this.buffer);
               const flushIdx = partialIdx === -1 ? this.buffer.length : partialIdx;
-              result.text += this.buffer.substring(0, flushIdx);
+              const tail = sanitizeStrayCloses(this.buffer.substring(0, flushIdx));
+              if (tail.trim().length > 0) result.text += tail;
               this.buffer = this.buffer.substring(flushIdx);
             }
           }
@@ -435,21 +459,23 @@ export class StreamingToolParser {
     if (this.insideTool) {
       const trimmed = this.buffer.trim();
       if (trimmed.length > 0) {
-        const recovered = this.tryRecoverToolCall(trimmed);
-        if (recovered) {
-          result.toolCalls.push(recovered);
-          this.emittedToolCallCount++;
+        const recovered = this.recoverAllToolCalls(trimmed);
+        if (recovered.length > 0) {
+          for (const tc of recovered) {
+            result.toolCalls.push(tc);
+            this.emittedToolCallCount++;
+          }
         } else {
           throttledWarn('unrecoverable', (n) =>
             logger.warn(`[parser] Dropping unrecoverable unclosed tool call at end of stream (${n} total)`)
           );
           result.text += this.pendingLeadIn;
-          result.text += this.currentOpenTag + this.buffer + TOOL_END;
+          result.text += this.currentOpenTag + this.buffer + closeTagFor(this.currentOpenTag);
         }      } else {
         result.text += this.pendingLeadIn;
       }
     } else {
-      result.text += this.buffer;
+      result.text += sanitizeStrayCloses(this.buffer);
     }
 
     this.buffer = '';
@@ -541,40 +567,50 @@ export class StreamingToolParser {
       })
     );
     result.text += this.pendingLeadIn;
-    result.text += this.currentOpenTag + content + TOOL_END;
+    result.text += this.currentOpenTag + content + closeTagFor(this.currentOpenTag);
     this.pendingLeadIn = '';
   }
 
   private tryRecoverToolCall(block: string): ParsedToolCall | null {
+    const all = this.recoverAllToolCalls(block);
+    return all.length > 0 ? all[0] : null;
+  }
+
+  /**
+   * Recovers every tool call embedded in a (possibly unclosed) block. Unlike
+   * `tryRecoverToolCall`, this handles the provider emitting multiple JSON
+   * objects inside a single unterminated `<tool_call >` block — each top-level
+   * `{...}` is treated as an independent tool call.
+   */
+  private recoverAllToolCalls(block: string): ParsedToolCall[] {
     const unescaped = unescapeDoubleEscaped(block);
-    
+    const out: ParsedToolCall[] = [];
+
     const xmlParsed = parseXmlParameterToolCall(unescaped, this.currentOpenTag, this.tools);
     if (xmlParsed) {
-      return {
+      return [{
         id: `call_${crypto.randomUUID()}`,
         name: xmlParsed.name,
         arguments: xmlParsed.arguments,
-      };
+      }];
     }
 
     const recovered = parseRecoverableXmlToolCall(unescaped, this.currentOpenTag, this.tools);
     if (recovered) {
-      return {
+      return [{
         id: `call_${crypto.randomUUID()}`,
         name: recovered.name,
         arguments: recovered.arguments,
-      };
+      }];
     }
 
-    const jsonParsed = this.parseToolContent(unescaped);
-    if (jsonParsed.length > 0) {
-      const first = jsonParsed[0];
-      const attrName = extractToolName(this.currentOpenTag, unescaped);
-      if (attrName && !first.name) first.name = attrName;
-      if (first.name) return first;
+    const attrName = extractToolName(this.currentOpenTag, unescaped);
+    for (const tc of this.parseToolContent(unescaped)) {
+      if (attrName && !tc.name) tc.name = attrName;
+      if (tc.name) out.push(tc);
     }
 
-    return null;
+    return out;
   }
 
   private parseToolContent(str: string): ParsedToolCall[] {
